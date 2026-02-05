@@ -1,0 +1,93 @@
+#!/bin/bash
+#SBATCH --job-name= # TODO: Set your job name
+#SBATCH --partition=             # TODO: Set your partition name
+#SBATCH --nodes=                # TODO: Set your number of nodes
+#SBATCH --ntasks-per-node=       # TODO: Set your number of tasks per node
+#SBATCH --gres=gpu:          # TODO: Set your GPU type (h100:1, l40s:1, etc.)
+#SBATCH --cpus-per-task=       # TODO: Set your number of CPUs per task
+#SBATCH --mem=60G                # TODO: Set your memory per node
+#SBATCH --array=0-647                   # TODO: Set your array range based on total combinations
+#SBATCH --time=25:59:59            # TODO: Set your time limit
+#SBATCH --mail-type=begin,end,fail # TODO: Set your email notification type
+#SBATCH --mail-user=YOUR_EMAIL@example.com    # TODO: Set your email
+#SBATCH --output=llm_experiment%A_%a.out  # TODO: Set your output file name
+#SBATCH --export=ALL,PYTORCH_JIT=0
+
+# TODO: Modify these paths for your environment
+source ~/miniconda3/etc/profile.d/conda.sh    # TODO: Set your conda path
+conda activate YOUR_ENV_NAME                   # TODO: Set your conda environment name
+
+# TODO: Set your personal tokens and paths
+export HUGGINGFACE_HUB_TOKEN="YOUR_HF_TOKEN"  # TODO: Set your HuggingFace token
+export TOKENIZERS_PARALLELISM=false
+export HF_HOME=/path/to/your/hf_cache          # TODO: Set your HF cache path
+export PY=~/miniconda3/envs/YOUR_ENV/bin/python # TODO: Set your Python path
+export PYTHONPATH=$PYTHONPATH:$(pwd)/..
+export WANDB_ENTITY="YOUR_WANDB_ENTITY"       # TODO: Set your WandB entity
+export WANDB_PROJECT="YOUR_PROJECT_NAME"      # TODO: Set your WandB project name
+
+# Environment information
+echo "==== ENVIRONMENT INFORMATION ===="
+echo "Job ID: $SLURM_JOB_ID"
+echo "Running on host: $(hostname)"
+echo "Current working directory: $(pwd)"
+echo "Python path: $PY"
+echo "HF_HOME: $HF_HOME"
+echo "CUDA devices: $CUDA_VISIBLE_DEVICES"
+echo "WandB Entity: $WANDB_ENTITY"
+echo "WandB Project: $WANDB_PROJECT"
+date
+
+# GPU setup verification
+echo "==== GPU SETUP ===="
+nvidia-smi
+$PY -c "import torch; print(f'PyTorch version: {torch.__version__}'); \
+        print(f'CUDA available: {torch.cuda.is_available()}'); \
+        print(f'GPU count: {torch.cuda.device_count()}'); \
+        print(f'GPU name: {torch.cuda.get_device_name(0) if torch.cuda.is_available() else \"None\"}'); \
+        print(f'Max memory allocated: {torch.cuda.max_memory_allocated(0)/(1024**2)} MB'); \
+        import wandb; print(f'WandB installed: {wandb.__version__}')"
+
+# TODO: Define your experimental parameters
+MODELS=("")                                # TODO: Set your model list (qwen, qwen3, qwen7, etc.)
+MODES=("" "" "")               # TODO: Set your training modes
+datasets=("")                            # TODO: Set your dataset list
+topk_ratios=()           # TODO: Set your topk ratios
+lrs=(1e-5)                                   # TODO: Set your learning rates
+seeds=(42)                      # TODO: Set your random seeds
+
+# Build experiment combinations
+COMBINATIONS=()
+for LLM_MODEL in "${MODELS[@]}";do
+  for ds in "${datasets[@]}"; do
+    for mode in "${MODES[@]}";do
+      for tk in "${topk_ratios[@]}"; do
+        for lr in "${lrs[@]}"; do 
+            for seed in "${seeds[@]}"; do
+                  lr_tag="${lr/./_}"     
+                  tk_tag="${tk/./_}"     
+                  outdir="outputs/${mode}_${ds}_lr${lr_tag}_tk${tk_tag}"  # TODO: Set your output directory
+                  cmd="--lr $lr --recovery_lr $recovery_lr --wd 0.1 --train_batch 4 --active_threshold -0.1 --num_epoch 3 --mode $mode --gradient_accumulation_steps 2 --source_task $src_task --source_ratio $src_r"
+                  cmd="$cmd --active_sample_ratio 0.01 --topk_ratio $tk --task $ds --model $LLM_MODEL"
+                  cmd="$cmd --output_dir $outdir"  
+                  cmd="$cmd --seed $seed"
+                  cmd="$cmd --use_wandb --wandb_project YOUR_WANDB_PROJECT --wandb_entity YOUR_WANDB_ENTITY"  # TODO: Set your WandB info
+                  COMBINATIONS+=("$cmd")
+                  done
+                done
+              done
+          done
+        done
+    done
+
+# Run experiment
+TOTAL_JOBS=${#COMBINATIONS[@]}
+echo "Total number of job combinations: $TOTAL_JOBS"
+
+CMD="${COMBINATIONS[$SLURM_ARRAY_TASK_ID]}"
+echo "Running: $PY ../train_llm.py $CMD --schedule"
+$PY ../train_llm.py $CMD --schedule
+
+LLM_STATUS=$?
+echo "LLM experiment exit status: $LLM_STATUS"
+echo "Check WandB dashboard for results"

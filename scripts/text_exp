@@ -1,0 +1,63 @@
+#!/bin/bash
+#SBATCH --job-name= # TODO: Set your job name
+#SBATCH --partition=             # TODO: Set your partition name
+#SBATCH --nodes=                # TODO: Set your number of nodes
+#SBATCH --ntasks-per-node=       # TODO: Set your number of tasks per node
+#SBATCH --gres=gpu:          # TODO: Set your GPU type (h100:1, l40s:1, etc.)
+#SBATCH --cpus-per-task=       # TODO: Set your number of CPUs per task
+#SBATCH --mem=60G                # TODO: Set your memory per node
+#SBATCH --array=0-15                    # TODO: Set your array range based on combinations
+#SBATCH --time=25:59:59            # TODO: Set your time limit
+#SBATCH --mail-type=begin,end,fail # TODO: Set your email notification type
+#SBATCH --mail-user=YOUR_EMAIL@example.com    # TODO: Set your email
+#SBATCH --export=ALL,PYTORCH_JIT=0
+
+# TODO: Set your environment paths
+export TOKENIZERS_PARALLELISM=false
+export HF_HOME=/path/to/your/hf_cache          # TODO: Set your HF cache path
+export PY=~/miniconda3/envs/YOUR_ENV/bin/python  # TODO: Set your Python path
+
+# TODO: Define your experimental parameters
+wd=(0.01)                                      # TODO: Set your weight decay values
+batch_sizes=(32)                               # TODO: Set your batch sizes
+modes=("")                                   # TODO: Set your training modes
+text_datasets=("" "" "" "")    # TODO: Set your text dataset list
+text_models=("" "")  # TODO: Set your text model list
+
+# Generate all hyperparameter combinations
+COMBINATIONS=()
+for w in "${wd[@]}"; do
+  for batch in "${batch_sizes[@]}"; do
+    for mode in "${modes[@]}"; do
+      for dataset in "${text_datasets[@]}"; do
+        for model in "${text_models[@]}"; do
+          cmd="--model_name $model --dataset $dataset --modality text"
+          cmd="$cmd --learning_rate 1e-4 --batch_size $batch --num_epochs 5"
+          cmd="$cmd --weight_decay $w --gradient_accumulation_steps 1"
+          cmd="$cmd --use_wandb --wandb_project YOUR_PROJECT --wandb_entity YOUR_ENTITY"  # TODO: Set your WandB info
+
+          COMBINATIONS+=("$cmd")
+        done
+      done
+    done
+  done
+done
+
+# Get total number of combinations
+TOTAL_JOBS=${#COMBINATIONS[@]}
+echo "Total number of job combinations: $TOTAL_JOBS"
+
+# Run the appropriate configuration based on the SLURM array ID
+CMD="${COMBINATIONS[$SLURM_ARRAY_TASK_ID]}"
+echo "Running: $PY ../train_classifier.py $CMD"
+
+# Run NS mode
+$PY ../train_classifier.py $CMD --mode ns --threshold 0.01 --sample_ratio 0.05 --schedule
+
+# Run LoRA comparison
+echo "Running LoRA with $CMD"
+$PY ../train_classifier.py $CMD --mode lora
+
+# Optional: Run LoRA with different ranks
+echo "Running LoRA with rank 64"
+$PY ../train_classifier.py $CMD --mode lora --lora_r 64 --lora_alpha 128 --schedule
