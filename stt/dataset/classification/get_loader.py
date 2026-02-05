@@ -75,7 +75,6 @@ def _get_image_dataloader(config, dataset_name, batch_size, image_size, dev_mode
                 torch.tensor([data_loader.class_to_idx[lbl] for _, lbl in batch])
             ),
         )
-
     elif dataset_name == "gtsrb":
         # TODO: Update these paths to match your GTSRB dataset location
         train_root = "./datasets/gtsrb/GTSRB/Training"  # TODO: Set your GTSRB training path
@@ -105,7 +104,6 @@ def _get_image_dataloader(config, dataset_name, batch_size, image_size, dev_mode
                 torch.tensor([int(lbl) for _, lbl in batch])
             )
         )
-
         val_dataloader = (
             DataLoader(
                 val_dataset,
@@ -118,7 +116,6 @@ def _get_image_dataloader(config, dataset_name, batch_size, image_size, dev_mode
             )
             if val_dataset else None
         )
-
         test_dataloader = DataLoader(
             test_dataset,
             batch_size=batch_size,
@@ -137,158 +134,6 @@ def _get_image_dataloader(config, dataset_name, batch_size, image_size, dev_mode
                 torch.tensor([int(lbl) for _, lbl in batch])
             )
         )
-    elif dataset_name == "fer2013":
-        from .fer import FER2013DataLoader
-        # TODO: Update this path to match your FER2013 dataset location
-        csv_file = "./datasets/fer2013/fer2013.csv"  # TODO: Set your FER2013 CSV file path
-        data_loader = FER2013DataLoader(csv_file)
-        num_classes = 7
-        train_dataloader = DataLoader(
-            data_loader.train_dataset,
-            batch_size=batch_size,
-            shuffle=True,
-            collate_fn=lambda batch: (
-                torch.stack([img for img, _ in batch]),
-                torch.tensor([int(lbl) for _, lbl in batch])
-            ),
-        )
-        # FER2013 doesn't have a separate validation set, use None
-        val_dataloader = None
-        
-        test_dataloader = DataLoader(
-            data_loader.test_dataset,
-            batch_size=batch_size,
-            shuffle=False,
-            collate_fn=lambda batch: (
-                torch.stack([img for img, _ in batch]),
-                torch.tensor([int(lbl) for _, lbl in batch])
-            ),
-        )
-        
-        # Create non-shuffle train dataloader for neuron selection
-        non_shuffle_train_dataloader = DataLoader(
-            data_loader.train_dataset,
-            batch_size=batch_size,
-            shuffle=False,
-            collate_fn=lambda batch: (
-                torch.stack([img for img, _ in batch]),
-                torch.tensor([int(lbl) for _, lbl in batch])
-            ),
-        )
-
-    elif dataset_name == "pets":
-
-        import torchvision
-
-        from torchvision import transforms
-
-        # TODO: Update this path to match your dataset root directory
-        root_dir = "./datasets/"  # TODO: Set your dataset root directory
-
-        train_dataset = torchvision.datasets.OxfordIIITPet(
-
-            root=root_dir, split="trainval", download=True,
-
-            transform=None, target_types="category"
-
-        )
-
-        test_dataset = torchvision.datasets.OxfordIIITPet(
-
-            root=root_dir, split="test", download=True,
-
-            transform=None, target_types="category"
-
-        )
-
-        clip_transform = transforms.Compose([
-
-            transforms.Resize((224, 224)),
-
-            transforms.ToTensor(),
-
-            transforms.Normalize(mean=[0.48145466, 0.4578275, 0.40821073],
-
-                                 std=[0.26862954, 0.26130258, 0.27577711]),
-
-        ])
-
-        train_dataset = [(clip_transform(img), label) for img, label in train_dataset]
-
-        test_dataset = [(clip_transform(img), label) for img, label in test_dataset]
-
-        num_classes = 37
-
-        collate_fn = lambda batch: (
-
-            torch.stack([img for img, _ in batch]),
-
-            torch.tensor([lbl for _, lbl in batch])
-
-        )
-
-        train_dataloader = DataLoader(
-
-            train_dataset,
-
-            batch_size=batch_size,
-
-            shuffle=True,
-
-            collate_fn=collate_fn,
-
-        )
-
-        test_dataloader = DataLoader(
-
-            test_dataset,
-
-            batch_size=batch_size,
-
-            shuffle=False,
-
-            collate_fn=collate_fn,
-
-        )
-        
-        # Oxford Pet doesn't have a separate validation set, use None
-        val_dataloader = None
-        
-        # Create non-shuffle train dataloader for neuron selection
-        non_shuffle_train_dataloader = DataLoader(
-            train_dataset,
-            batch_size=batch_size,
-            shuffle=False,
-            collate_fn=collate_fn,
-        )
-        
-        data_loader = type('DummyDataLoader', (), {'train_dataset': train_dataset})
-
-
-
-    elif dataset_name == "fgvc":
-        exit()
-        root_path = "./data/fgvc_aircraft"
-        data_loader = FGVCAircraftDataLoader(root_path)
-
-        collate_fn = lambda batch: (
-            torch.stack([img for img, _ in batch]),
-            torch.tensor([data_loader.class_to_idx[lbl] for _, lbl in batch])
-        )
-        num_classes = 100
-        train_dataloader = DataLoader(
-            data_loader.train_dataset,
-            batch_size=batch_size,
-            shuffle=True,
-            collate_fn=collate_fn,
-        )
-        test_dataloader = DataLoader(
-            data_loader.test_dataset,
-            batch_size=batch_size,
-            shuffle=False,
-            collate_fn=collate_fn,
-        )
-
     elif dataset_name == "clevr_count":
         from .clevr_count import CLEVRCountDataLoader
         # Initialize the dataloader
@@ -349,59 +194,8 @@ def _get_image_dataloader(config, dataset_name, batch_size, image_size, dev_mode
                 torch.tensor([int(lbl) for _, lbl in batch])
             )
         )
-
-
-    elif dataset_name == "dtd":
-        from .dtd import DTDDataset, DTDDataLoader
-        # TODO: Update this path to match your DTD dataset location
-        data_dir = "./datasets/dtd/dtd"  # TODO: Set your DTD dataset path
-        data_loader = DTDDataLoader(data_dir)
-        num_classes = len(data_loader.classes)  # Should be 47
-
-        train_dataloader = DataLoader(
-            data_loader.train_dataset,
-            batch_size=batch_size,
-            shuffle=True,
-            collate_fn=lambda batch: (
-                torch.stack([img for img, _ in batch]),
-                torch.tensor([int(lbl) for _, lbl in batch])
-            ),
-        )
-
-        val_dataloader = DataLoader(
-            data_loader.val_dataset,
-            batch_size=batch_size,
-            shuffle=False,
-            collate_fn=lambda batch: (
-                torch.stack([img for img, _ in batch]),
-                torch.tensor([int(lbl) for _, lbl in batch])
-            ),
-        )
-
-        test_dataloader = DataLoader(
-            data_loader.test_dataset,  # Use test split for evaluation
-            batch_size=batch_size,
-            shuffle=False,
-            collate_fn=lambda batch: (
-                torch.stack([img for img, _ in batch]),
-                torch.tensor([int(lbl) for _, lbl in batch])
-            ),
-        )
-        
-        non_shuffle_train_dataloader = DataLoader(
-            data_loader.train_dataset,
-            batch_size=batch_size,
-            shuffle=False,
-            collate_fn=lambda batch: (
-                torch.stack([img for img, _ in batch]),
-                torch.tensor([int(lbl) for _, lbl in batch])
-            ),
-        )
-
-
     else:
         raise ValueError(f"Image dataset '{dataset_name}' not supported.")
-
     return num_classes, train_dataloader, val_dataloader, test_dataloader, non_shuffle_train_dataloader
 
 

@@ -3,10 +3,7 @@ import os
 # os.environ['HF_HOME'] = 'your_hf_cache_path'  # TODO: Set your HuggingFace cache path
 from ..evaluate import evaluate_clutrr
 from ..evaluate.gen_eval import (
-    evaluate_musique, evaluate_gsm8k, evaluate_boolq
-, evaluate_rte, evaluate_hellaswag, evaluate_winogrande,
-    evaluate_arc, evaluate_obqa
-
+    evaluate_boolq, evaluate_arc
 )
 from trl import SFTTrainer
 import wandb
