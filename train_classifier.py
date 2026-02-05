@@ -1139,55 +1139,51 @@ def main():
 
     # Determine evaluation mode and run benchmark
     is_pruned = args.mode != "baseline"
-    if is_pruned:
-        if args.eval_inference_time:
-            # Note: For ViT/BERT, only fc1/intermediate.dense should use inference_time=True
-            # fc2/output.dense should remain False (it outputs full dimensions)
-            # For LLM, gate_proj and up_proj use inference_time=True, down_proj remains False
-            print("\n[Evaluation] Switching to inference_time mode (true pruning, no scatter)...")
-            
-            # Clear CUDA cache and optimizer states before switching
-            clear_cuda_cache_and_states(
-                optimizer=optimizer if 'optimizer' in locals() else None,
-                trainer=None,  # train_classifier doesn't use trainer object
-                model=model,
-                device=device,
-                verbose=True
-            )
-            
-            modified_count = 0
-            for name, module in model.named_modules():
-                if isinstance(module, STTLinear):
-                    # For LLM: gate_proj and up_proj use inference_time=True
-                    # For ViT/BERT: fc1/intermediate.dense use inference_time=True
-                    # down_proj/fc2/output.dense should remain False (it outputs full dimensions)
-                    is_gate_or_up = (
-                        'gate_proj' in name or 'up_proj' in name or  # LLM
-                        'fc1' in name or 'intermediate.dense' in name or 'intermediate_dense' in name  # ViT/BERT
-                    )
-                    is_down = (
-                        'down_proj' in name or  # LLM
-                        'fc2' in name or 'output.dense' in name or 'output_dense' in name  # ViT/BERT
-                    )
-                    
-                    if is_gate_or_up:
-                        module.inference_time = True
-                        modified_count += 1
-                    elif is_down:
-                        module.inference_time = False  # Explicitly set to False
-            
-            # Clear cache again after switching
-            if device == "cuda":
-                torch.cuda.empty_cache()
-                torch.cuda.synchronize()
-            
-            print(f"[Evaluation] Model switched to inference_time mode")
-            print(f"[Evaluation] Modified {modified_count} gate/up/fc1/intermediate modules to inference_time=True")
-            
-            eval_mode_str = "True Pruning (inference_time=True)"
-        else:
-            print("\n[Evaluation] Using scatter mode (inference_time=False, default)")
-            eval_mode_str = "Scatter (inference_time=False)"
+    if is_pruned and args.eval_inference_time:
+        # Note: For ViT/BERT, only fc1/intermediate.dense should use inference_time=True
+        # fc2/output.dense should remain False (it outputs full dimensions)
+        # For LLM, gate_proj and up_proj use inference_time=True, down_proj remains False
+        print("\n[Evaluation] Switching to inference_time mode (true pruning, no scatter)...")
+        
+        # Clear CUDA cache and optimizer states before switching
+        clear_cuda_cache_and_states(
+            optimizer=optimizer if 'optimizer' in locals() else None,
+            trainer=None,  # train_classifier doesn't use trainer object
+            model=model,
+            device=device,
+            verbose=True
+        )
+        
+        modified_count = 0
+        for name, module in model.named_modules():
+            if isinstance(module, STTLinear):
+                # For LLM: gate_proj and up_proj use inference_time=True
+                # For ViT/BERT: fc1/intermediate.dense use inference_time=True
+                # down_proj/fc2/output.dense should remain False (it outputs full dimensions)
+                is_gate_or_up = (
+                    'gate_proj' in name or 'up_proj' in name or  # LLM
+                    'fc1' in name or 'intermediate.dense' in name or 'intermediate_dense' in name  # ViT/BERT
+                )
+                is_down = (
+                    'down_proj' in name or  # LLM
+                    'fc2' in name or 'output.dense' in name or 'output_dense' in name  # ViT/BERT
+                )
+                
+                if is_gate_or_up:
+                    module.inference_time = True
+                    modified_count += 1
+                elif is_down:
+                    module.inference_time = False  # Explicitly set to False
+        
+        # Clear cache again after switching
+        if device == "cuda":
+            torch.cuda.empty_cache()
+            torch.cuda.synchronize()
+        
+        print(f"[Evaluation] Model switched to inference_time mode")
+        print(f"[Evaluation] Modified {modified_count} gate/up/fc1/intermediate modules to inference_time=True")
+        
+        eval_mode_str = "True Pruning (inference_time=True)"
     else:
         print("\n[Evaluation] Using baseline mode (no pruning)")
         eval_mode_str = "Baseline (no pruning)"
@@ -1205,7 +1201,7 @@ def main():
     if args.bench_linear_replace:
         if is_pruned and args.eval_inference_time:
             # True pruning mode: benchmark with padding 128 (already applied above)
-            print(f"\n[Benchmark] Testing with padding 128 for True Pruning mode...")
+            print(f"\n[Benchmark] Testing True Pruning mode (with padding 128)...")
             # Use bench_forward with real data from eval_dataloader
             if args.modality == "image":
                 throughput, latency_ms = bench_forward_image(model, eval_dataloader=eval_dataloader, iters=200, warmup=20, device=device)
@@ -1215,30 +1211,15 @@ def main():
                 throughput, latency_ms = bench_forward(model, eval_dataloader=eval_dataloader, iters=200, warmup=20, device=device)
                 print(f"  Throughput: {throughput:.2f} samples/sec (using real data)")
                 print(f"  Latency:    {latency_ms:.2f} ms/batch")
-        elif is_pruned:
-            # Scatter mode: just run single benchmark
-            # For ViT/BERT, we need to determine appropriate input size
-            if args.modality == "image":
-                print(f"\n[Micro-Benchmark] Measuring pure forward pass speed ({eval_mode_str})...")
-                # Use bench_forward_image with real data for scatter mode
-                throughput, latency_ms = bench_forward_image(model, eval_dataloader=eval_dataloader, iters=200, warmup=20, device=device)
-                print(f"  Throughput: {throughput:.2f} samples/sec (using real data)")
-                print(f"  Latency:    {latency_ms:.2f} ms/batch")
-            else:  # text
-                print(f"\n[Micro-Benchmark] Measuring pure forward pass speed ({eval_mode_str})...")
-                throughput, latency_ms = bench_forward(model, seq_len=args.max_length, batch=4, iters=200, warmup=20, device=device)
-                print(f"  Throughput: {throughput:.2f} samples/sec")
-                print(f"  Latency:    {latency_ms:.2f} ms/batch")
         else:
             # Baseline mode: just run single benchmark
+            print(f"\n[Benchmark] Testing Baseline mode...")
             if args.modality == "image":
-                print(f"\n[Micro-Benchmark] Measuring pure forward pass speed ({eval_mode_str})...")
                 # Use bench_forward_image with real data for baseline mode
                 throughput, latency_ms = bench_forward_image(model, eval_dataloader=eval_dataloader, iters=200, warmup=20, device=device)
                 print(f"  Throughput: {throughput:.2f} samples/sec (using real data)")
                 print(f"  Latency:    {latency_ms:.2f} ms/batch")
             else:  # text
-                print(f"\n[Micro-Benchmark] Measuring pure forward pass speed ({eval_mode_str})...")
                 throughput, latency_ms = bench_forward(model, eval_dataloader=eval_dataloader, iters=200, warmup=20, device=device)
                 print(f"  Throughput: {throughput:.2f} samples/sec (using real data)")
                 print(f"  Latency:    {latency_ms:.2f} ms/batch")

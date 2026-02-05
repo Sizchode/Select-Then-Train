@@ -655,36 +655,32 @@ def main():
         wandb.log({"status": "training_finished", "evaluating": True})
 
     is_pruned = args.mode != "baseline"
-    if is_pruned:
-        if args.eval_inference_time:
-            print("\n[Evaluation] Switching to inference_time mode (true pruning, no scatter)...")
-            
-            clear_cuda_cache_and_states(
-                optimizer=optimizer,
-                trainer=trainer,
-                model=model,
-                device=device,
-                verbose=True
-            )
-            
-            modified_count = 0
-            for name, module in model.named_modules():
-                if isinstance(module, STTLinear):
-                    if 'gate_proj' in name or 'up_proj' in name:
-                        module.inference_time = True
-                        modified_count += 1
-                    elif 'down_proj' in name:
-                        module.inference_time = False  
-            if device == "cuda":
-                torch.cuda.empty_cache()
-                torch.cuda.synchronize()
-            print(f"[Evaluation] Model switched to inference_time mode (gate/up only, down_proj remains False)")
-            print(f"[Evaluation] Modified {modified_count} gate/up_proj modules to inference_time=True")
-            
-            eval_mode_str = "True Pruning (inference_time=True)"
-        else:
-            print("\n[Evaluation] Using scatter mode (inference_time=False, default)")
-            eval_mode_str = "Scatter (inference_time=False)"
+    if is_pruned and args.eval_inference_time:
+        print("\n[Evaluation] Switching to inference_time mode (true pruning, no scatter)...")
+        
+        clear_cuda_cache_and_states(
+            optimizer=optimizer,
+            trainer=trainer,
+            model=model,
+            device=device,
+            verbose=True
+        )
+        
+        modified_count = 0
+        for name, module in model.named_modules():
+            if isinstance(module, STTLinear):
+                if 'gate_proj' in name or 'up_proj' in name:
+                    module.inference_time = True
+                    modified_count += 1
+                elif 'down_proj' in name:
+                    module.inference_time = False  
+        if device == "cuda":
+            torch.cuda.empty_cache()
+            torch.cuda.synchronize()
+        print(f"[Evaluation] Model switched to inference_time mode (gate/up only, down_proj remains False)")
+        print(f"[Evaluation] Modified {modified_count} gate/up_proj modules to inference_time=True")
+        
+        eval_mode_str = "True Pruning (inference_time=True)"
     else:
         print("\n[Evaluation] Using baseline mode (no pruning)")
         eval_mode_str = "Baseline (no pruning)"
@@ -738,23 +734,17 @@ def main():
     
     if args.bench_linear_replace:
         if is_pruned and args.eval_inference_time:
-            print(f"\n[Benchmark] Testing with padding 128 for True Pruning mode...")
-            throughput, latency_ms = bench_forward(model, eval_dataloader=eval_dataloader_bench, iters=200, warmup=20, device=device)
-            print(f"  Throughput: {throughput:.2f} samples/sec (using real data)")
-            print(f"  Latency:    {latency_ms:.2f} ms/batch")
-        elif is_pruned:
-            print(f"\n[Micro-Benchmark] Measuring pure forward pass speed ({eval_mode_str})...")
+            print(f"\n[Benchmark] Testing True Pruning mode (with padding 128)...")
             throughput, latency_ms = bench_forward(model, eval_dataloader=eval_dataloader_bench, iters=200, warmup=20, device=device)
             print(f"  Throughput: {throughput:.2f} samples/sec (using real data)")
             print(f"  Latency:    {latency_ms:.2f} ms/batch")
         else:
-            print(f"\n[Micro-Benchmark] Measuring pure forward pass speed ({eval_mode_str})...")
+            print(f"\n[Benchmark] Testing Baseline mode...")
             throughput, latency_ms = bench_forward(model, eval_dataloader=eval_dataloader_bench, iters=200, warmup=20, device=device)
             print(f"  Throughput: {throughput:.2f} samples/sec (using real data)")
             print(f"  Latency:    {latency_ms:.2f} ms/batch")
     else:
-        bench_mode_str = ""
-        print(f"\n[Micro-Benchmark] Measuring pure forward pass speed ({eval_mode_str}{bench_mode_str})...")
+        print(f"\n[Micro-Benchmark] Measuring pure forward pass speed ({eval_mode_str})...")
         throughput, latency_ms = bench_forward(model, seq_len=512, batch=4, iters=200, warmup=20, device=device)
         print(f"  Throughput: {throughput:.2f} samples/sec")
         print(f"  Latency:    {latency_ms:.2f} ms/batch")
