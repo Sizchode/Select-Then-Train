@@ -1,6 +1,6 @@
 import os
-os.environ['HF_HOME'] = '/users/pyu12/data/bats/huggingface'
-import os
+# HF_HOME should be set via environment variable or in your shell config
+# os.environ['HF_HOME'] = 'your_hf_cache_path'  # TODO: Set your HuggingFace cache path
 from ..evaluate import evaluate_clutrr
 from ..evaluate.gen_eval import (
     evaluate_musique, evaluate_gsm8k, evaluate_boolq
@@ -95,44 +95,19 @@ class CustomSFTTrainerV2(SFTTrainer):
         self.model.eval()
         self.args.prediction_loss_only = False
 
-        # if not os.path.exists(fname):
-        #     os.makedirs(fname)
         os.makedirs(fname, exist_ok=True)
 
         if wandb.run is not None:
             predictions_table = wandb.Table(columns=["example_id", "input", "prediction", "ground_truth", "correct"])
 
-        if task == 'mquake':
-            generated = evaluate_mquake(eval_dataset=eval_dataset, model_name=model_name, model=self.model,
-                                        tokenizer=self.processing_class, fname=fname,
-                                        apply_chat_template=apply_chat_template)
-        elif task == 'clutrr':
+        if task == 'clutrr':
             generated = evaluate_clutrr(eval_dataset=eval_dataset, model_name=model_name, model=self.model,
                                         tokenizer=self.processing_class, fname=fname,
                                         apply_chat_template=apply_chat_template)
-        elif task == 'musique':
-            generated = evaluate_musique(eval_dataset=eval_dataset, model_name=model_name, model=self.model,
-                                         tokenizer=self.processing_class, fname=fname,
-                                         apply_chat_template=apply_chat_template)
-        elif task == 'gsm8k':
-            generated = evaluate_gsm8k(eval_dataset=eval_dataset, model=self.model,
-                                       tokenizer=self.processing_class, output_dir=fname)
         elif task == 'boolq':
             generated = evaluate_boolq(eval_dataset=eval_dataset, model_name=model_name, model=self.model,
                                        tokenizer=self.processing_class, fname=fname,
                                        apply_chat_template=apply_chat_template)
-        elif task == 'rte':
-            generated = evaluate_rte(eval_dataset=eval_dataset, model_name=model_name, model=self.model,
-                                     tokenizer=self.processing_class, fname=fname,
-                                     apply_chat_template=apply_chat_template)
-        elif task == 'hellaswag':
-            generated = evaluate_hellaswag(eval_dataset=eval_dataset, model_name=model_name, model=self.model,
-                                           tokenizer=self.processing_class, fname=fname,
-                                           apply_chat_template=apply_chat_template)
-        elif task == 'winogrande':
-            generated = evaluate_winogrande(eval_dataset=eval_dataset, model_name=model_name, model=self.model,
-                                            tokenizer=self.processing_class, fname=fname,
-                                            apply_chat_template=apply_chat_template)
         elif task == 'arc-e':
             generated = evaluate_arc(eval_dataset=eval_dataset, model_name=model_name, model=self.model,
                                      tokenizer=self.processing_class, fname=fname, subset="easy",
@@ -141,10 +116,6 @@ class CustomSFTTrainerV2(SFTTrainer):
             generated = evaluate_arc(eval_dataset=eval_dataset, model_name=model_name, model=self.model,
                                      tokenizer=self.processing_class, fname=fname, subset="challenge",
                                      apply_chat_template=apply_chat_template)
-        elif task == 'obqa':
-            generated = evaluate_obqa(eval_dataset=eval_dataset, model_name=model_name, model=self.model,
-                                      tokenizer=self.processing_class, fname=fname,
-                                      apply_chat_template=apply_chat_template)
         else:
             raise ValueError(f"Unknown task: {task}")
 

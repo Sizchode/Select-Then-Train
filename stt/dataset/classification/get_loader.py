@@ -77,9 +77,10 @@ def _get_image_dataloader(config, dataset_name, batch_size, image_size, dev_mode
         )
 
     elif dataset_name == "gtsrb":
-        train_root = "/users/pyu12/data/bats/datasets/gtrsb/GTSRB/Training"
-        test_annotations = "/users/pyu12/data/bats/datasets/gtrsb/GT-final_test.csv"
-        test_img_dir = "/users/pyu12/data/bats/datasets/gtrsb/GTSRB/Final_Test/Images"
+        # TODO: Update these paths to match your GTSRB dataset location
+        train_root = "./datasets/gtsrb/GTSRB/Training"  # TODO: Set your GTSRB training path
+        test_annotations = "./datasets/gtsrb/GT-final_test.csv"  # TODO: Set your GTSRB test annotations path
+        test_img_dir = "./datasets/gtsrb/GTSRB/Final_Test/Images"  # TODO: Set your GTSRB test images path
         data_loader = GTSRBDataLoader(train_root, test_annotations, test_img_dir, image_size = image_size)
         num_classes = 43
         full_train = data_loader.train_dataset
@@ -138,7 +139,8 @@ def _get_image_dataloader(config, dataset_name, batch_size, image_size, dev_mode
         )
     elif dataset_name == "fer2013":
         from .fer import FER2013DataLoader
-        csv_file = "/users/pyu12/data/bats/datasets/fer13/fer2013.csv"
+        # TODO: Update this path to match your FER2013 dataset location
+        csv_file = "./datasets/fer2013/fer2013.csv"  # TODO: Set your FER2013 CSV file path
         data_loader = FER2013DataLoader(csv_file)
         num_classes = 7
         train_dataloader = DataLoader(
@@ -180,7 +182,8 @@ def _get_image_dataloader(config, dataset_name, batch_size, image_size, dev_mode
 
         from torchvision import transforms
 
-        root_dir = "/users/pyu12/data/bats/datasets/"
+        # TODO: Update this path to match your dataset root directory
+        root_dir = "./datasets/"  # TODO: Set your dataset root directory
 
         train_dataset = torchvision.datasets.OxfordIIITPet(
 
@@ -350,7 +353,8 @@ def _get_image_dataloader(config, dataset_name, batch_size, image_size, dev_mode
 
     elif dataset_name == "dtd":
         from .dtd import DTDDataset, DTDDataLoader
-        data_dir = "/users/pyu12/data/bats/datasets/dtd/dtd"  # Update with your actual path to DTD dataset
+        # TODO: Update this path to match your DTD dataset location
+        data_dir = "./datasets/dtd/dtd"  # TODO: Set your DTD dataset path
         data_loader = DTDDataLoader(data_dir)
         num_classes = len(data_loader.classes)  # Should be 47
 
