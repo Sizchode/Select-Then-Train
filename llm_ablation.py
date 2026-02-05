@@ -43,8 +43,8 @@ def main():
                         default="clutrr",
                         help='Task/dataset to evaluate on')
     parser.add_argument('--mode', type=str,
-                        choices=["lora", "adalora", "loha", "lokr", "finetune", "baseline", "mag_pt", "mag_tp","wanda_p","transfer", "covplot",
-                        "wanda_tp", "calibration","activation_mean_value", "activation_rate"],
+                        choices=["lora", "adalora", "loha", "lokr", "finetune", "baseline", "mag_tp", "wanda_tp",
+                        "calibration", "activation_mean_value", "activation_rate"],
                         default="baseline",
                         help="Training mode: 'activation_mean_value' for activation magnitude ablation, 'activation_rate' for activation frequency ablation, etc.")
     parser.add_argument('--apply_chat_template',
@@ -65,8 +65,6 @@ def main():
 
     parser.add_argument('--active_threshold', type=float, default=0.01,
                         help='Activation threshold for finding active neurons')
-    parser.add_argument('--active_thresholds', type=float, nargs=2, default=None,
-                        help='Two activation thresholds for neuron selection (e.g., 0.01 0.05)')
     parser.add_argument('--use_abs_threshold', action='store_true',
                         help='Use absolute threshold values for activation')
     parser.add_argument('--active_sample_ratio', type=float, default=0.1,
@@ -913,7 +911,6 @@ def main():
             max_grad_norm=0.5,
             gradient_accumulation_steps=args.gradient_accumulation_steps * 2, 
             dataloader_pin_memory=False, 
-            deepspeed=None,
         )
 
         # Create recovery trainer

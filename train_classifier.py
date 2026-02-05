@@ -512,145 +512,7 @@ def main():
     # Print model layers for debugging
     print_model_layers(model)
     print("Model loaded successfully")
-    if args.mode == "activation_mean_value":
-        print("[ABLT] one-shot, sparsity-based selection; budget-matched to NS per layer")
-        sel_loader = sample_active_set(non_shuffle_train_dataloader, ratio=float(args.sample_ratio))
-        
-        # First run NS tracker (tracker6) to get K-per-layer budget
-        tracker_budget = NeuronTracker(
-            model, threshold=0.01, topk_ratio=args.topk_ratio,
-            device=device, track_attention_proj=False, verbose=False
-        )
-        active = tracker_budget.get_active_indices(dataloader=sel_loader)
-        layer_name_map = tracker_budget.get_layer_name_map()
-        k_map = {ln: len(idx) for ln, idx in active.items()}
-
-        # Now use AblationNeuronTracker (ablation_tracker) with budget from tracker6 (like mag_pt/wanda_p)
-        print("[ABLT] Using ablation_tracker with activation magnitude, budget-matched to NS per layer")
-        tracker_a = AblationNeuronTracker(model, topk_ratio=1.0, device=device, verbose=False)  
-        # Use magnitude-based selection with k_map budget (like mag_pt)
-        sel_indices_raw = tracker_a.get_active_indices_with_budget(
-            dataloader=sel_loader,
-            k_map=k_map,
-            use_activation_rate=False  # Use activation magnitude for ablation mode
-        )
-        
-        # Convert to tensor format
-        sel_indices = {}
-        for lname, idx in sel_indices_raw.items():
-            if isinstance(idx, torch.Tensor):
-                sel_indices[lname] = idx
-            else:
-                sel_indices[lname] = torch.as_tensor(idx, dtype=torch.long)
-
-
-        nst = STTTransformer(
-            model, active_neurons=sel_indices,
-            layer_name_map=layer_name_map,
-            tune_pruned=False, device=device, verbose=True,
-            inference_time=False  # Training: use scatter mode
-        )
-        model = nst.transform().to(device).to(torch.float32)
-        for name, param in model.named_parameters():
-            param.requires_grad = False
-
-        # Enable output layers parameters (classifier, etc.)
-        trainable = []
-        for name, module in model.named_modules():
-            if any(key in name for key in ["lm_head", "classifier", "score", "pooler", "out_proj"]):
-                for param_name, param in module.named_parameters(recurse=False):
-                    param.requires_grad = True
-                    trainable.append(param)
-                print(f"new trainable: {name}")
-
-        for name, module in model.named_modules():
-            if isinstance(module, STTLinear):
-                for param_name, param in module.named_parameters():
-                    param.requires_grad = True
-                    trainable.append(param)
-                print(f"new trainable: {name}")
-
-        final_param_count = sum(p.numel() for p in model.parameters())
-        final_trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-
-        optimizer = AdamW([p for p in model.parameters() if p.requires_grad],
-                        lr=args.lr, weight_decay=args.wd)
-
-        F_fwd_variant   = flops_forward(model, _inp1_fwd, device=str(device))
-        F_train_variant = flops_train_step(model, _inp1_train, device=str(device), criterion=_criterion)
-        print(f"[FLOPs] per-image forward ({args.mode}): {F_fwd_variant/1e9:.3f} GFLOPs")
-        print(f"[FLOPs] per-image train   ({args.mode}): {F_train_variant/1e9:.3f} GFLOPs")
-
-    elif args.mode == "activation_rate":
-        print("[ABLT2] one-shot, activation-rate-based selection; budget-matched to NS per layer")
-        sel_loader = sample_active_set(non_shuffle_train_dataloader, ratio=float(args.sample_ratio))
-        
-        # First run NS tracker (tracker6) to get K-per-layer budget
-        tracker_budget = NeuronTracker(
-            model, threshold=0.01, topk_ratio=args.topk_ratio,
-            device=device, track_attention_proj=False, verbose=False
-        )
-        active = tracker_budget.get_active_indices(dataloader=sel_loader)
-        layer_name_map = tracker_budget.get_layer_name_map()
-        k_map = {ln: len(idx) for ln, idx in active.items()}
-
-        # Now use AblationNeuronTracker (ablation_tracker) with budget from tracker6 (like mag_pt/wanda_p)
-        print("[ABLT2] Using ablation_tracker with activation rate, budget-matched to NS per layer")
-        tracker_a = AblationNeuronTracker(model, topk_ratio=1.0, device=device, verbose=False)  
-        # Use activation-rate-based selection with k_map budget (like mag_pt)
-        sel_indices_raw = tracker_a.get_active_indices_with_budget(
-            dataloader=sel_loader,
-            k_map=k_map,
-            use_activation_rate=True  # Use activation rate for ablation2 mode
-        )
-        
-        # Convert to tensor format
-        sel_indices = {}
-        for lname, idx in sel_indices_raw.items():
-            if isinstance(idx, torch.Tensor):
-                sel_indices[lname] = idx
-            else:
-                sel_indices[lname] = torch.as_tensor(idx, dtype=torch.long)
-
-
-        nst = STTTransformer(
-            model, active_neurons=sel_indices,
-            layer_name_map=layer_name_map,
-            tune_pruned=False, device=device, verbose=True,
-            inference_time=False  # Training: use scatter mode
-        )
-        model = nst.transform().to(device).to(torch.float32)
-        for name, param in model.named_parameters():
-            param.requires_grad = False
-
-        # Enable output layers parameters (classifier, etc.)
-        trainable = []
-        for name, module in model.named_modules():
-            if any(key in name for key in ["lm_head", "classifier", "score", "pooler", "out_proj"]):
-                for param_name, param in module.named_parameters(recurse=False):
-                    param.requires_grad = True
-                    trainable.append(param)
-                print(f"new trainable: {name}")
-
-        for name, module in model.named_modules():
-            if isinstance(module, STTLinear):
-                for param_name, param in module.named_parameters():
-                    param.requires_grad = True
-                    trainable.append(param)
-                print(f"new trainable: {name}")
-
-        final_param_count = sum(p.numel() for p in model.parameters())
-        final_trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-
-        optimizer = AdamW([p for p in model.parameters() if p.requires_grad],
-                        lr=args.lr, weight_decay=args.wd)
-
-        F_fwd_variant   = flops_forward(model, _inp1_fwd, device=str(device))
-        F_train_variant = flops_train_step(model, _inp1_train, device=str(device), criterion=_criterion)
-        print(f"[FLOPs] per-image forward ({args.mode}): {F_fwd_variant/1e9:.3f} GFLOPs")
-        print(f"[FLOPs] per-image train   ({args.mode}): {F_train_variant/1e9:.3f} GFLOPs")
-
-    elif args.mode == "stt":
+    if args.mode == "stt":
         print(f"Creating active dataset with sample ratio: {args.sample_ratio}")
         active_dataloader = sample_active_set(
                 non_shuffle_train_dataloader,
@@ -808,7 +670,7 @@ def main():
                            f"Please increase sample_ratio or check dataset size.")
 
         first_batch = next(iter(active_dataloader))
-        print("Doing STTLora now, using tracker-6")
+        print("Doing STTLora now")
         print("\n=== Debug: first batch ===")
         print("type :", type(first_batch))
 
@@ -937,8 +799,7 @@ def main():
         print(f"[FLOPs] per-image forward ({args.mode}): {F_fwd_variant/1e9:.3f} GFLOPs")
         print(f"[FLOPs] per-image train   ({args.mode}): {F_train_variant/1e9:.3f} GFLOPs") 
     elif args.mode == "wanda_adapt":  
-        print("[WANDA] one-shot, input-side (L1), per-layer top-k")
-
+        print("Doing Wanda adaptive pruning now")
         sel_loader = sample_active_set(non_shuffle_train_dataloader, ratio=float(args.sample_ratio))
         tracker_budget = NeuronTracker(
             model, threshold=0.01, topk_ratio=args.topk_ratio,
@@ -953,10 +814,8 @@ def main():
             dataloader=sel_loader,
             scan_batches=int(getattr(args, "wanda_calib_batches", 4))
         )
-
         def _is_fc1(lname: str) -> bool:
             return any(k in lname for k in ["gate_proj","fc1","lin1","wi","mlp_fc1","intermediate_dense","mlp.fc1","intermediate.dense"])
-
         sel_indices = {}
         for m in model.modules():
             if not isinstance(m, nn.Linear):
@@ -967,16 +826,11 @@ def main():
             idx = wanda_indices_all.get(lname, None)
             if idx is None or len(idx) == 0:
                 continue
-
-            k = int(k_map.get(lname, 0))     # 仅使用预算
+            k = int(k_map.get(lname, 0))    
             if k <= 0:
                 continue
-
-            # 预算截断（此时 idx 长度应≥k；若个别层仍短，会被安全裁剪为 idx 长度）
             idx_t = torch.as_tensor(idx[:k], dtype=torch.long)
             sel_indices[lname] = idx_t
-
-
         nst = STTTransformer(
             model, active_neurons=sel_indices,
             layer_name_map=layer_name_map,
@@ -986,7 +840,6 @@ def main():
         model = nst.transform().to(device).to(torch.float32)
         for name, param in model.named_parameters():
             param.requires_grad = False
-
         # Enable output layers parameters (classifier, etc.)
         trainable = []
         for name, module in model.named_modules():

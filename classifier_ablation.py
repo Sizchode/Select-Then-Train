@@ -18,7 +18,6 @@ from transformers import (
     CLIPModel,
     CLIPVisionModel
 )
-from stt.stt_lora import STTLoraLinear
 from stt.mlps.stt_linear2 import STTLinear  # Use the selective linear layer from stt_linear2.py
 from stt.stt_transformer import STTTransformer  # Use the pruner from stt_transformer.py
 from stt.stt_tracker import STTTracker as NeuronTracker
@@ -172,8 +171,8 @@ def main():
 
     # Run mode
     parser.add_argument("--mode", type=str, default="baseline",
-                        choices=["lora", "adalora", "loha", "lokr", "baseline","mag_pt", "mag_tp", "wanda_p", "transfer", "cross_task_plot",
-                        "activation_mean_value", "activation_rate", "calibration","wanda_tp"],
+                        choices=["lora", "adalora", "loha", "lokr", "baseline", "mag_tp", "wanda_tp",
+                        "activation_mean_value", "activation_rate", "calibration"],
                         help="Run mode: 'activation_mean_value' for activation magnitude ablation, 'activation_rate' for activation frequency ablation, etc.")
 
     # Neuron selection options
@@ -588,9 +587,9 @@ def main():
         layer_name_map = tracker_budget.get_layer_name_map()
         k_map = {ln: len(idx) for ln, idx in active.items()}
 
-        # Now use AblationNeuronTracker (ablation_tracker) with ONLY sparsity metric
+        # Now use AblationTracker (ablation_tracker) with ONLY sparsity metric
         print("[ABLT] Using ablation_tracker with ONLY sparsity metric (fraction of samples > threshold)")
-        tracker_a = AblationNeuronTracker(model, topk_ratio=args.topk_ratio, device=device, verbose=False)  
+        tracker_a = AblationTracker(model, topk_ratio=args.topk_ratio, device=device, verbose=False)  
         # Use activation-rate-based selection (sparsity) with use_activation_rate=True
         sparsity_indices_all = tracker_a.get_active_indices(dataloader=sel_loader, use_activation_rate=True)
 
@@ -667,9 +666,9 @@ def main():
         layer_name_map = tracker_budget.get_layer_name_map()
         k_map = {ln: len(idx) for ln, idx in active.items()}
 
-        # Now use AblationNeuronTracker (ablation_tracker) with activation rate metric
+        # Now use AblationTracker (ablation_tracker) with activation rate metric
         print("[ABLT2] Using ablation_tracker with activation rate metric (fraction of samples > threshold)")
-        tracker_a = AblationNeuronTracker(model, topk_ratio=args.topk_ratio, device=device, verbose=False)  
+        tracker_a = AblationTracker(model, topk_ratio=args.topk_ratio, device=device, verbose=False)  
         # Use activation-rate-based selection (sparsity) with use_activation_rate=True
         sparsity_indices_all = tracker_a.get_active_indices(dataloader=sel_loader, use_activation_rate=True)
 
