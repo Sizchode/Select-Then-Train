@@ -171,7 +171,7 @@ def main():
 
     # Run mode
     parser.add_argument("--mode", type=str, default="baseline",
-                        choices=["lora", "adalora", "loha", "lokr", "baseline", "mag_tp", "wanda_tp",
+                        choices=["lora", "baseline", "mag_tp", "wanda_tp",
                         "activation_mean_value", "activation_rate", "calibration"],
                         help="Run mode: 'activation_mean_value' for activation magnitude ablation, 'activation_rate' for activation frequency ablation, etc.")
 

@@ -43,7 +43,7 @@ def main():
                         default="clutrr",
                         help='Task/dataset to evaluate on')
     parser.add_argument('--mode', type=str,
-                        choices=["lora", "adalora", "loha", "lokr", "finetune", "baseline", "mag_tp", "wanda_tp",
+                        choices=["lora", "finetune", "baseline", "mag_tp", "wanda_tp",
                         "calibration", "activation_mean_value", "activation_rate"],
                         default="baseline",
                         help="Training mode: 'activation_mean_value' for activation magnitude ablation, 'activation_rate' for activation frequency ablation, etc.")
