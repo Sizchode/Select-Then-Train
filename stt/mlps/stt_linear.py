@@ -6,7 +6,7 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 
-class NeuroselectiveLinear(nn.Module):
+class STTLinear(nn.Module):
     def __init__(
             self,
             in_features: int,

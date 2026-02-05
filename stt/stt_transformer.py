@@ -5,8 +5,8 @@ from typing import Dict, Optional, List, Any, Union
 
 logger = logging.getLogger(__name__)
 
-# From our NeuroselectiveLinear implementation
-from .mlps.stt_linear2 import NeuroselectiveLinear
+# From our STTLinear implementation
+from .mlps.stt_linear2 import STTLinear
 
 # Common MLP submodule names
 MLP_SUBMODULE_NAMES = {
@@ -16,7 +16,7 @@ MLP_SUBMODULE_NAMES = {
 }
 
 
-class NeuroselectiveTransformer5:
+class STTTransformer:
     def __init__(
             self,
             model: nn.Module,
@@ -157,7 +157,7 @@ class NeuroselectiveTransformer5:
                 # Create new pruned layers
                 factory_kwargs = {'device': gate_layer.weight.device, 'dtype': gate_layer.weight.dtype}
 
-                new_gate_layer = NeuroselectiveLinear.from_linear(
+                new_gate_layer = STTLinear.from_linear(
                     original_module=gate_layer, 
                     in_indices=None,  # Keep all inputs
                     out_indices=intermediate_indices,  # Prune outputs
@@ -168,7 +168,7 @@ class NeuroselectiveTransformer5:
                 # Only create up_layer if up_name is not None (LLM has up layer, ViT/BERT don't)
                 new_up_layer = None
                 if up_name is not None:
-                    new_up_layer = NeuroselectiveLinear.from_linear(
+                    new_up_layer = STTLinear.from_linear(
                         original_module=up_layer,
                         in_indices=None,  # Keep all inputs
                         out_indices=intermediate_indices,  # Prune outputs
@@ -176,7 +176,7 @@ class NeuroselectiveTransformer5:
                         **factory_kwargs
                      )
 
-                new_down_layer = NeuroselectiveLinear.from_linear(
+                new_down_layer = STTLinear.from_linear(
                     original_module=down_layer,
                     in_indices=intermediate_indices,  # Prune inputs
                     out_indices=None,  # Keep all outputs

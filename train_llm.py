@@ -13,14 +13,14 @@ import os
 from META import LLM_DATASET_PATHS as dataset_paths  # Assuming this exists
 from stt.dataset import CLUTRR
 from stt.dataset.genloader_2 import BoolQ, ARC
-from stt.mlps.stt_linear2 import NeuroselectiveLinear
-from stt.stt_transformer import NeuroselectiveTransformer5
-from stt.stt_tracker import NeuronTracker6 as NeuronTracker
-from stt.ablation_tracker import NeuronTracker7 as AblationTracker
+from stt.mlps.stt_linear2 import STTLinear
+from stt.stt_transformer import STTTransformer
+from stt.stt_tracker import STTTracker as NeuronTracker
+from stt.ablation_tracker import AblationTracker
 from stt.wanda_adapt_tracker import WandaAdaptTracker
 from peft import get_peft_model, LoraConfig
 from stt.trainers import CustomSFTTrainerV2
-from stt.stt_lora import NSLoraLinear  # Import the NSLoraLinear class
+from stt.stt_lora import STTLoraLinear
 from util.utils import (
     set_seed,
     bench_forward,
@@ -243,7 +243,7 @@ def main():
 
         # 4. STTTransformer Initialization
         print("Initializing STTTransformer...")
-        transformer = NeuroselectiveTransformer5(
+        transformer = STTTransformer(
             model=model_to_prune,
             active_neurons=active_indices_dict,
             layer_name_map=layer_map,
@@ -258,12 +258,12 @@ def main():
         model = pruned_model
         print("Model variable now points to the pruned model.")
 
-        # For stt_lora mode, apply NSLoraLinear to STTLinear layers
+        # For stt_lora mode, apply STTLoraLinear to STTLinear layers
         if args.mode == "stt_lora":
-            print("--- Applying NSLoraLinear to STTLinear layers ---")
-            # Convert STTLinear layers to NSLoraLinear
+            print("--- Applying STTLoraLinear to STTLinear layers ---")
+            # Convert STTLinear layers to STTLoraLinear
             for name, module in model.named_modules():
-                if isinstance(module, NeuroselectiveLinear):
+                if isinstance(module, STTLinear):
                     parent_name = name.rsplit('.', 1)[0] if '.' in name else ''
                     attr_name = name.split('.')[-1]
 
@@ -272,8 +272,8 @@ def main():
                     if parent_name:
                         for part in parent_name.split('.'):
                             parent = getattr(parent, part)
-                    # Replace STTLinear with NSLoraLinear
-                    ns_lora = NSLoraLinear(
+                    # Replace STTLinear with STTLoraLinear
+                    ns_lora = STTLoraLinear(
                         stt_linear=module,
                         r=args.lora_r,
                         lora_alpha=args.lora_alpha,
@@ -283,14 +283,14 @@ def main():
                     # Set the attribute on the parent module
                     setattr(parent, attr_name, ns_lora)
 
-            print("NSLoraLinear transformation complete.")
+            print("STTLoraLinear transformation complete.")
             _bp = next(p for p in model.parameters() if p.is_floating_point())  # [ADDED]
             for m in model.modules():  # [ADDED]
-                if isinstance(m, NSLoraLinear):  # [ADDED]
+                if isinstance(m, STTLoraLinear):  # [ADDED]
                     m.lora_A.to(device=_bp.device, dtype=_bp.dtype)  # [ADDED]
                     m.lora_B.to(device=_bp.device, dtype=_bp.dtype)  # [ADDED]
                     m.scaling = torch.as_tensor(m.scaling, device=_bp.device, dtype=_bp.dtype)  # [ADDED]
-            print("[NSLoRA] base:", _bp.dtype, "adapters:", {m.lora_A.weight.dtype for m in model.modules() if isinstance(m, NSLoraLinear)})  # [ADDED]
+            print("[NSLoRA] base:", _bp.dtype, "adapters:", {m.lora_A.weight.dtype for m in model.modules() if isinstance(m, STTLoraLinear)})  # [ADDED]
     elif args.mode == "magnitude_pruning":
         sampled_subset = data_loader.get_active_set(args.active_sample_ratio)
         sampled_subset = sampled_subset['text']
@@ -351,7 +351,7 @@ def main():
                 mag_indices[lname] = topk_idx
 
         # 3) structural pruning into a STT subnetwork
-        nst = NeuroselectiveTransformer5(
+        nst = STTTransformer(
             model=model,
             active_neurons=mag_indices,
             layer_name_map=layer_map,
@@ -371,7 +371,7 @@ def main():
         for name, p in model.named_parameters():
             p.requires_grad = False
         for name, module in model.named_modules():
-            if isinstance(module, NeuroselectiveLinear) or ('lm_head' in name):
+            if isinstance(module, STTLinear) or ('lm_head' in name):
                 for p in module.parameters():
                     p.requires_grad = True
                     trainable_params_list.append(p)
@@ -462,7 +462,7 @@ def main():
             assert len(ids) == min(k_map.get(ln, 0), len(wanda_indices_all.get(ln, []))), \
                 f"[wanda_adapt] budget mismatch @ {ln}: want={k_map.get(ln,0)} got={len(ids)}"
 
-        nst = NeuroselectiveTransformer5(
+        nst = STTTransformer(
             model=model,
             active_neurons=wanda_indices,
             layer_name_map=layer_map,
@@ -480,7 +480,7 @@ def main():
         for name, p in model.named_parameters():
             p.requires_grad = False
         for name, module in model.named_modules():
-            if isinstance(module, NeuroselectiveLinear) or ('lm_head' in name):
+            if isinstance(module, STTLinear) or ('lm_head' in name):
                 for p in module.parameters():
                     p.requires_grad = True
                     trainable_params_list.append(p)
@@ -507,7 +507,7 @@ def main():
         for name, param in model.named_parameters():
             param.requires_grad = False
         for name, module in model.named_modules():
-            if isinstance(module, NeuroselectiveLinear) or 'lm_head' in name:
+            if isinstance(module, STTLinear) or 'lm_head' in name:
                 for param in module.parameters():
                     param.requires_grad = True
                     trainable_params_list.append(param)
@@ -523,14 +523,14 @@ def main():
             )
             model = get_peft_model(model, head_cfg)        
 
-        # For NSLoraLinear, we only train the LoRA parameters
+        # For STTLoraLinear, we only train the LoRA parameters
         trainable_params_list = []
         for name, param in model.named_parameters():
             param.requires_grad = False
 
-        # Enable training for NSLoraLinear parameters and lm_head
+        # Enable training for STTLoraLinear parameters and lm_head
         for name, module in model.named_modules():
-            if isinstance(module, NSLoraLinear) or 'lm_head' in name:
+            if isinstance(module, STTLoraLinear) or 'lm_head' in name:
                 for param_name, param in module.named_parameters():
                     if 'lora_A' in param_name or 'lora_B' in param_name:
                         param.requires_grad = True
@@ -669,7 +669,7 @@ def main():
             
             modified_count = 0
             for name, module in model.named_modules():
-                if isinstance(module, NeuroselectiveLinear):
+                if isinstance(module, STTLinear):
                     if 'gate_proj' in name or 'up_proj' in name:
                         module.inference_time = True
                         modified_count += 1

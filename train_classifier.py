@@ -18,11 +18,11 @@ from transformers import (
     CLIPModel,
     CLIPVisionModel
 )
-from stt.stt_lora import NSLoraLinear  # Import the NSLoraLinear class
-from stt.mlps.stt_linear2 import NeuroselectiveLinear  # Use the selective linear layer from stt_linear2.py
-from stt.stt_transformer import NeuroselectiveTransformer5  # Use the pruner from stt_transformer.py
-from stt.stt_tracker import NeuronTracker6 as NeuronTracker
-from stt.ablation_tracker import NeuronTracker7 as AblationNeuronTracker
+from stt.stt_lora import STTLoraLinear
+from stt.mlps.stt_linear2 import STTLinear  # Use the selective linear layer from stt_linear2.py
+from stt.stt_transformer import STTTransformer  # Use the pruner from stt_transformer.py
+from stt.stt_tracker import STTTracker as NeuronTracker
+from stt.ablation_tracker import AblationTracker
 
 from stt.dataset import get_dataloader
 from util.torch_flops import (
@@ -251,7 +251,7 @@ def main():
     parser.add_argument("--eval_inference_time", action="store_true",
                         help="Switch to inference_time mode (true pruning, no scatter) for final evaluation")
     parser.add_argument("--bench_linear_replace", action="store_true",
-                        help="Run benchmark tests for NeuroselectiveLinear padding strategies")
+                        help="Run benchmark tests for STTLinear padding strategies")
 
     args = parser.parse_args()
 
@@ -544,7 +544,7 @@ def main():
                 sel_indices[lname] = torch.as_tensor(idx, dtype=torch.long)
 
 
-        nst = NeuroselectiveTransformer5(
+        nst = STTTransformer(
             model, active_neurons=sel_indices,
             layer_name_map=layer_name_map,
             tune_pruned=False, device=device, verbose=True,
@@ -564,7 +564,7 @@ def main():
                 print(f"new trainable: {name}")
 
         for name, module in model.named_modules():
-            if isinstance(module, NeuroselectiveLinear):
+            if isinstance(module, STTLinear):
                 for param_name, param in module.named_parameters():
                     param.requires_grad = True
                     trainable.append(param)
@@ -613,7 +613,7 @@ def main():
                 sel_indices[lname] = torch.as_tensor(idx, dtype=torch.long)
 
 
-        nst = NeuroselectiveTransformer5(
+        nst = STTTransformer(
             model, active_neurons=sel_indices,
             layer_name_map=layer_name_map,
             tune_pruned=False, device=device, verbose=True,
@@ -633,7 +633,7 @@ def main():
                 print(f"new trainable: {name}")
 
         for name, module in model.named_modules():
-            if isinstance(module, NeuroselectiveLinear):
+            if isinstance(module, STTLinear):
                 for param_name, param in module.named_parameters():
                     param.requires_grad = True
                     trainable.append(param)
@@ -724,7 +724,7 @@ def main():
         if not non_empty_layers:
             raise RuntimeError("Tracker failed.")
 
-        nstransformer = NeuroselectiveTransformer5(
+        nstransformer = STTTransformer(
             model=model,  # Use the fresh or original model instance
             active_neurons=active_neurons,  
             layer_name_map=layer_name_map, 
@@ -760,7 +760,7 @@ def main():
                 print(f"new trainable: {name}")
 
         for name, module in model.named_modules():
-            if isinstance(module, NeuroselectiveLinear):
+            if isinstance(module, STTLinear):
                 for param_name, param in module.named_parameters():
                     param.requires_grad = True
                     trainable.append(param)
@@ -808,7 +808,7 @@ def main():
                            f"Please increase sample_ratio or check dataset size.")
 
         first_batch = next(iter(active_dataloader))
-        print("Doing NSLora now, using trakcer-6")
+        print("Doing STTLora now, using tracker-6")
         print("\n=== Debug: first batch ===")
         print("type :", type(first_batch))
 
@@ -846,7 +846,7 @@ def main():
         if not non_empty_layers:
             raise RuntimeError("Tracker failed.")
 
-        nstransformer = NeuroselectiveTransformer5(
+        nstransformer = STTTransformer(
             model=model,  # Use the fresh or original model instance
             active_neurons=active_neurons,  # Corrected: Use the dict from tracker
             layer_name_map=layer_name_map,  # Correct: Pass the map
@@ -857,18 +857,18 @@ def main():
         )
 
         model = nstransformer.transform().to(device).to(torch.float32)
-        # Only apply NSLoraLinear to pruned NeuroselectiveLinear layers
+        # Only apply STTLoraLinear to pruned STTLinear layers
         print("Pruning complete")
 
-        # 3) Wrap each NeuroselectiveLinear in NSLoraLinear
-        from stt.stt_lora import NSLoraLinear
+        # 3) Wrap each STTLinear in STTLoraLinear
+        from stt.stt_lora import STTLoraLinear
         for name, module in model.named_modules():
-            if isinstance(module, NeuroselectiveLinear):
+            if isinstance(module, STTLinear):
                 parent_path, attr = name.rsplit(".", 1)
                 parent = model
                 for p in parent_path.split("."):
                     parent = getattr(parent, p)
-                ns_lora = NSLoraLinear(
+                ns_lora = STTLoraLinear(
                     stt_linear=module,
                     r=args.lora_r,
                     lora_alpha=args.lora_alpha,
@@ -884,7 +884,7 @@ def main():
         for param in model.parameters():
             param.requires_grad = False
         for nm, mod in model.named_modules():
-            if isinstance(mod, NSLoraLinear):
+            if isinstance(mod, STTLoraLinear):
                 mod.lora_A.weight.requires_grad = True
                 mod.lora_B.weight.requires_grad = True
             if nm.endswith("classifier"):
@@ -920,7 +920,7 @@ def main():
                 score = m.weight.abs().sum(dim=1)   
                 topk = torch.topk(score, min(k, score.numel())).indices
                 mag_indices[lname] = topk
-        nst = NeuroselectiveTransformer5(model, active_neurons=mag_indices,
+        nst = STTTransformer(model, active_neurons=mag_indices,
                                         layer_name_map=layer_name_map,
                                         tune_pruned=False, device=device, verbose=True,
                                         inference_time=False  # Training: use scatter mode
@@ -977,7 +977,7 @@ def main():
             sel_indices[lname] = idx_t
 
 
-        nst = NeuroselectiveTransformer5(
+        nst = STTTransformer(
             model, active_neurons=sel_indices,
             layer_name_map=layer_name_map,
             tune_pruned=False, device=device, verbose=True,
@@ -997,7 +997,7 @@ def main():
                 print(f"new trainable: {name}")
 
         for name, module in model.named_modules():
-            if isinstance(module, NeuroselectiveLinear):
+            if isinstance(module, STTLinear):
                 for param_name, param in module.named_parameters():
                     param.requires_grad = True
                     trainable.append(param)
@@ -1304,7 +1304,7 @@ def main():
             
             modified_count = 0
             for name, module in model.named_modules():
-                if isinstance(module, NeuroselectiveLinear):
+                if isinstance(module, STTLinear):
                     # For LLM: gate_proj and up_proj use inference_time=True
                     # For ViT/BERT: fc1/intermediate.dense use inference_time=True
                     # down_proj/fc2/output.dense should remain False (it outputs full dimensions)

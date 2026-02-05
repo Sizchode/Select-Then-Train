@@ -16,7 +16,7 @@ MLP_FIRST_LAYER_PATTERNS = [
 ]
 
 
-class NeuronTracker6:
+class STTTracker:
     def __init__(self, model: nn.Module, tokenizer=None, threshold=0.01, topk_ratio: float = 0.10, use_abs_threshold=True, device="cuda", track_attention_proj=False, verbose=False, use_abs_for_rate=False):
         self.model = model
         self.tokenizer = tokenizer

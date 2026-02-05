@@ -14,13 +14,13 @@ import os
 from META import LLM_DATASET_PATHS as dataset_paths  # Assuming this exists
 from stt.dataset import CLUTRR
 from stt.dataset.genloader_2 import BoolQ, ARC
-from stt.mlps.stt_linear2 import NeuroselectiveLinear
-from stt.stt_transformer import NeuroselectiveTransformer5
-from stt.stt_tracker import NeuronTracker6 as NeuronTracker
-from stt.ablation_tracker import NeuronTracker7 as AblationNeuronTracker
+from stt.mlps.stt_linear2 import STTLinear
+from stt.stt_transformer import STTTransformer
+from stt.stt_tracker import STTTracker as NeuronTracker
+from stt.ablation_tracker import AblationTracker
 from peft import get_peft_model, LoraConfig
 from stt.trainers import CustomSFTTrainerV2
-from stt.stt_lora import NSLoraLinear  
+from stt.stt_lora import STTLoraLinear  
 from util.utils import (
     set_seed,
     setup_lora,
@@ -370,9 +370,9 @@ def main():
             model_to_prune = model
 
 
-        # 4. NeuroselectiveTransformer5 Initialization
-        print("Initializing NeuroselectiveTransformer5...")
-        transformer = NeuroselectiveTransformer5(
+        # 4. STTTransformer Initialization
+        print("Initializing STTTransformer...")
+        transformer = STTTransformer(
             model=model_to_prune,
             active_neurons=active_indices_dict,
             layer_name_map=layer_map,
@@ -386,12 +386,12 @@ def main():
         model = pruned_model
         print("Model variable now points to the pruned model.")
 
-        # For stt_lora mode, apply NSLoraLinear to NeuroselectiveLinear layers
+        # For stt_lora mode, apply STTLoraLinear to STTLinear layers
         if args.mode == "stt_lora":
-            print("--- Applying NSLoraLinear to NeuroselectiveLinear layers ---")
-            # Convert NeuroselectiveLinear layers to NSLoraLinear
+            print("--- Applying STTLoraLinear to STTLinear layers ---")
+            # Convert STTLinear layers to STTLoraLinear
             for name, module in model.named_modules():
-                if isinstance(module, NeuroselectiveLinear):
+                if isinstance(module, STTLinear):
                     parent_name = name.rsplit('.', 1)[0] if '.' in name else ''
                     attr_name = name.split('.')[-1]
 
@@ -401,8 +401,8 @@ def main():
                         for part in parent_name.split('.'):
                             parent = getattr(parent, part)
 
-                    # Replace NeuroselectiveLinear with NSLoraLinear
-                    ns_lora = NSLoraLinear(
+                    # Replace STTLinear with STTLoraLinear
+                    ns_lora = STTLoraLinear(
                         stt_linear=module,
                         r=args.lora_r,
                         lora_alpha=args.lora_alpha,
@@ -413,169 +413,14 @@ def main():
                     # Set the attribute on the parent module
                     setattr(parent, attr_name, ns_lora)
 
-            print("NSLoraLinear transformation complete.")
+            print("STTLoraLinear transformation complete.")
             _bp = next(p for p in model.parameters() if p.is_floating_point())  # [ADDED]
             for m in model.modules():  # [ADDED]
-                if isinstance(m, NSLoraLinear):  # [ADDED]
+                if isinstance(m, STTLoraLinear):  # [ADDED]
                     m.lora_A.to(device=_bp.device, dtype=_bp.dtype)  # [ADDED]
                     m.lora_B.to(device=_bp.device, dtype=_bp.dtype)  # [ADDED]
                     m.scaling = torch.as_tensor(m.scaling, device=_bp.device, dtype=_bp.dtype)  # [ADDED]
-            print("[NSLoRA] base:", _bp.dtype, "adapters:", {m.lora_A.weight.dtype for m in model.modules() if isinstance(m, NSLoraLinear)})  # [ADDED]
-    elif args.mode == "covplot":
-        # ===== NS layerwise cross-task analysis for LLM (4x4, hardcoded rho) =====
-        from collections import OrderedDict
-        from matplotlib import colors, cm
-
-        TASK_SPECS = OrderedDict({
-            "arc-e":   {"rho": 0.9},   
-            "arc-c":   {"rho": 0.9},   
-            "boolq":   {"rho": 0.8},  
-            "clutrr":  {"rho": 0.01},   
-        })
-
-        ratio = 0.01
-        print(f"[covplot] tasks: " + ", ".join(f"{k}:{v['rho']}" for k,v in TASK_SPECS.items())
-            + f" | calibration sample ratio={ratio}")
-
-        results_by_task = OrderedDict()
-        for ds_name, spec in TASK_SPECS.items():
-            print(f"\n----- [covplot] Processing: {ds_name} (rho={spec['rho']}) -----")
-            
-            if ds_name == 'clutrr':
-                temp_data_loader = CLUTRR(
-                    split_dir=dataset_paths['clutrr'],
-                    chat_template=args.apply_chat_template,
-                    model_name=args.model_name
-                )
-            elif ds_name == 'arc-e':
-                temp_data_loader = ARC(
-                    subset="easy",
-                    chat_template=args.apply_chat_template,
-                    model_name=args.model_name
-                )
-            elif ds_name == 'arc-c':
-                temp_data_loader = ARC(
-                    subset="challenge",
-                    chat_template=args.apply_chat_template,
-                    model_name=args.model_name
-                )
-            elif ds_name == 'boolq':
-                temp_data_loader = BoolQ(
-                    chat_template=args.apply_chat_template,
-                    model_name=args.model_name
-                )
-            else:
-                raise ValueError(f"Unsupported dataset: {ds_name}")
-                
-            sampled_subset = temp_data_loader.get_active_set(ratio)
-            sampled_subset = sampled_subset['text']
-            active_dataloader = torch.utils.data.DataLoader(sampled_subset, batch_size=args.eval_batch)
-
-            thr = args.threshold if hasattr(args, "threshold") else getattr(args, "active_threshold", 0.01)
-            tracker = NeuronTracker(
-                model=model, tokenizer=tokenizer, threshold=thr,
-                topk_ratio=float(spec["rho"]), use_abs_threshold=args.use_abs_threshold,
-                device=device, track_attention_proj=args.tune_attn, verbose=False
-            )
-            active_neurons = tracker.get_active_indices(dataloader=active_dataloader)
-            if active_neurons:
-                print(f"[*] [{ds_name}] active layers: {len(active_neurons)}")
-                results_by_task[ds_name] = active_neurons
-            else:
-                print(f"[!] [{ds_name}] empty selection; recording empty dict")
-                results_by_task[ds_name] = {}
-
-        task_names = list(results_by_task.keys())
-        N = len(task_names)
-        if N < 2:
-            raise RuntimeError("[covplot] need at least 2 tasks")
-
-        print("\n[*] [covplot] Computing matrices ...")
-        cov_matrix  = np.zeros((N, N), dtype=float)
-        jacc_matrix = np.zeros((N, N), dtype=float)
-        for i, A in enumerate(task_names):
-            for j, B in enumerate(task_names):
-                cov_matrix[i, j]  = calculate_directed_coverage(results_by_task[A], results_by_task[B], weighted=True)
-                jacc_matrix[i, j] = calculate_jaccard_similarity(results_by_task[A], results_by_task[B])
-
-        model_tag = args.model_name.replace("/", "_")
-        base_tag  = f"llm_cross_task_{model_tag}"
-        tick_labels = [t.replace("_", "\n").upper() for t in task_names]
-
-        fig_w = max(1.2 * N, 3.8)
-        fig_h = max(1.2 * N, 3.8)
-        tick_fs = max(8, int(14 - 0.3 * N))
-        ann_fs  = max(8, int(12 - 0.3 * N))
-        vmin, vmax = 0.0, 1.0
-
-        # 1) Cov(A|B)
-        plt.figure(figsize=(fig_w, fig_h))
-        ax = sns.heatmap(
-            cov_matrix, annot=False, xticklabels=tick_labels, yticklabels=tick_labels,
-            cmap="viridis", vmin=vmin, vmax=vmax, linewidths=1.0, linecolor="white",
-            square=True, cbar=True, cbar_kws=dict(fraction=0.03, pad=0.02, shrink=0.9, aspect=40, ticks=[0.0, 0.5, 1.0])
-        )
-        ax.tick_params(axis="x", labelrotation=0, pad=6, length=6, width=1.1, direction="out", labelsize=tick_fs)
-        ax.tick_params(axis="y", pad=6, length=6, width=1.1, direction="out", labelsize=tick_fs)
-        ax.set_xlabel("SOURCE TASK", fontsize=max(10, tick_fs))
-        ax.set_ylabel("TARGET TASK", fontsize=max(10, tick_fs))
-        for spine in ax.spines.values():
-            spine.set_visible(False)
-        ax.set_xticks(np.arange(-.5, N, 1), minor=True)
-        ax.set_yticks(np.arange(-.5, N, 1), minor=True)
-        ax.grid(which="minor", color="white", linestyle="-", linewidth=1.0)
-        ax.tick_params(which="minor", bottom=False, left=False)
-        norm = colors.Normalize(vmin=vmin, vmax=vmax)
-        _cmap = cm.get_cmap("viridis")
-        for i in range(N):
-            for j in range(N):
-                val = cov_matrix[i, j]
-                rgba = _cmap(norm(val))
-                lum = 0.2126 * rgba[0] + 0.7152 * rgba[1] + 0.0722 * rgba[2]
-                txt_color = "white" if lum < 0.5 else "black"
-                ax.text(j + 0.5, i + 0.5, f"{val:.3f}", ha="center", va="center", fontsize=ann_fs, color=txt_color, clip_on=True, zorder=3)
-        ax.set_xlim(0, N); ax.set_ylim(N, 0)
-        plt.tight_layout()
-        plt.savefig(f"cov_heatmap_{base_tag}.png", dpi=300, bbox_inches="tight")
-        plt.savefig(f"cov_heatmap_{base_tag}.pdf", dpi=300, bbox_inches="tight")
-        plt.close()
-        print(f"[*] Saved: cov_heatmap_{base_tag}.png/.pdf")
-
-        # 2) Jaccard
-        plt.figure(figsize=(fig_w, fig_h))
-        ax = sns.heatmap(
-            jacc_matrix, annot=False, xticklabels=tick_labels, yticklabels=tick_labels,
-            cmap="viridis", vmin=vmin, vmax=vmax, linewidths=1.0, linecolor="white",
-            square=True, cbar=True, cbar_kws=dict(fraction=0.03, pad=0.02, shrink=0.9, aspect=40, ticks=[0.0, 0.5, 1.0])
-        )
-        ax.tick_params(axis="x", labelrotation=0, pad=6, length=6, width=1.1, direction="out", labelsize=tick_fs)
-        ax.tick_params(axis="y", pad=6, length=6, width=1.1, direction="out", labelsize=tick_fs)
-        ax.set_xlabel("SOURCE TASK", fontsize=max(10, tick_fs))
-        ax.set_ylabel("TARGET TASK", fontsize=max(10, tick_fs))
-        for spine in ax.spines.values():
-            spine.set_visible(False)
-        ax.set_xticks(np.arange(-.5, N, 1), minor=True)
-        ax.set_yticks(np.arange(-.5, N, 1), minor=True)
-        ax.grid(which="minor", color="white", linestyle="-", linewidth=1.0)
-        ax.tick_params(which="minor", bottom=False, left=False)
-        norm = colors.Normalize(vmin=vmin, vmax=vmax)
-        _cmap = cm.get_cmap("viridis")
-        for i in range(N):
-            for j in range(N):
-                val = jacc_matrix[i, j]
-                rgba = _cmap(norm(val))
-                lum = 0.2126 * rgba[0] + 0.7152 * rgba[1] + 0.0722 * rgba[2]
-                txt_color = "white" if lum < 0.5 else "black"
-                ax.text(j + 0.5, i + 0.5, f"{val:.3f}", ha="center", va="center", fontsize=ann_fs, color=txt_color, clip_on=True, zorder=3)
-        ax.set_xlim(0, N); ax.set_ylim(N, 0)
-        plt.tight_layout()
-        plt.savefig(f"jacc_heatmap_{base_tag}.png", dpi=300, bbox_inches="tight")
-        plt.savefig(f"jacc_heatmap_{base_tag}.pdf", dpi=300, bbox_inches="tight")
-        plt.close()
-        print(f"[*] Saved: jacc_heatmap_{base_tag}.png/.pdf")
-
-        print("\n[INFO] LLM covplot (4x4) complete.")
-        return
+            print("[NSLoRA] base:", _bp.dtype, "adapters:", {m.lora_A.weight.dtype for m in model.modules() if isinstance(m, STTLoraLinear)})  # [ADDED]
     elif args.mode == "activation_mean_value":
         print("[ABLT] one-shot, sparsity-based selection; budget-matched to NS per layer")
         # 1) Build a small, non-shuffled active set (reuse your existing loader & ratio)
@@ -635,8 +480,8 @@ def main():
             keep = min(k, len(sparsity_idx))
             sel_indices[lname] = sparsity_idx[:keep]
 
-        # 5) Transform with NeuroselectiveTransformer5 and freeze everything except lm_head
-        nst = NeuroselectiveTransformer5(
+        # 5) Transform with STTTransformer and freeze everything except lm_head
+        nst = STTTransformer(
             model, active_neurons=sel_indices,
             layer_name_map=layer_name_map,
             tune_pruned=False, device=device, verbose=True
@@ -710,8 +555,8 @@ def main():
             keep = min(k, len(sparsity_idx))
             sel_indices[lname] = sparsity_idx[:keep]
 
-        # 5) Transform with NeuroselectiveTransformer5 and freeze everything except lm_head
-        nst = NeuroselectiveTransformer5(
+        # 5) Transform with STTTransformer and freeze everything except lm_head
+        nst = STTTransformer(
             model, active_neurons=sel_indices,
             layer_name_map=layer_name_map,
             tune_pruned=False, device=device, verbose=True
@@ -775,7 +620,7 @@ def main():
         active_src   = tracker_src.get_active_indices(dataloader=src_active_dl) or {}
         layer_map_src = tracker_src.get_layer_name_map()
 
-        nst = NeuroselectiveTransformer5(
+        nst = STTTransformer(
             model=model,
             active_neurons=active_src,
             layer_name_map=layer_map_src,
@@ -856,7 +701,7 @@ def main():
                 mag_indices[lname] = topk_idx
 
         # 3) structural pruning into a neuroselective subnetwork
-        nst = NeuroselectiveTransformer5(
+        nst = STTTransformer(
             model=model,
             active_neurons=mag_indices,
             layer_name_map=layer_map,
@@ -866,7 +711,7 @@ def main():
         )
         model = nst.transform().to(device)
 
-        # 4) freeze all, then unfreeze pruned-MLP (NeuroselectiveLinear) + output head
+        # 4) freeze all, then unfreeze pruned-MLP (STTLinear) + output head
         for p in model.parameters():
             p.requires_grad = False
 
@@ -875,12 +720,12 @@ def main():
         for name, p in model.named_parameters():
             p.requires_grad = False
         for name, module in model.named_modules():
-            if isinstance(module, NeuroselectiveLinear) or ('lm_head' in name):
+            if isinstance(module, STTLinear) or ('lm_head' in name):
                 for p in module.parameters():
                     p.requires_grad = True
                     trainable_params_list.append(p)
         if not trainable_params_list:
-            raise RuntimeError("[mag_pt] no NeuroselectiveLinear/lm_head found as trainables.")
+            raise RuntimeError("[mag_pt] no STTLinear/lm_head found as trainables.")
         optimizer = AdamW(trainable_params_list, lr=args.lr, weight_decay=args.wd)
 
         # 5) accounting + fresh optimizer (downstream code expects `optimizer`)
@@ -966,7 +811,7 @@ def main():
             assert len(ids) == min(k_map.get(ln, 0), len(wanda_indices_all.get(ln, []))), \
                 f"[wanda_p] budget mismatch @ {ln}: want={k_map.get(ln,0)} got={len(ids)}"
 
-        nst = NeuroselectiveTransformer5(
+        nst = STTTransformer(
             model=model,
             active_neurons=wanda_indices,
             layer_name_map=layer_map,
@@ -983,13 +828,13 @@ def main():
         for name, p in model.named_parameters():
             p.requires_grad = False
         for name, module in model.named_modules():
-            if isinstance(module, NeuroselectiveLinear) or ('lm_head' in name):
+            if isinstance(module, STTLinear) or ('lm_head' in name):
                 for p in module.parameters():
                     p.requires_grad = True
                     trainable_params_list.append(p)
 
         if not trainable_params_list:
-            raise RuntimeError("[wanda_p] no NeuroselectiveLinear/lm_head found as trainables.")
+            raise RuntimeError("[wanda_p] no STTLinear/lm_head found as trainables.")
 
         optimizer = AdamW(trainable_params_list, lr=args.lr, weight_decay=args.wd)
 
@@ -1072,7 +917,7 @@ def main():
         for name, param in model.named_parameters():
             param.requires_grad = False
         for name, module in model.named_modules():
-            if isinstance(module, NeuroselectiveLinear) or 'lm_head' in name:
+            if isinstance(module, STTLinear) or 'lm_head' in name:
                 for param in module.parameters():
                     param.requires_grad = True
                     trainable_params_list.append(param)
@@ -1088,14 +933,14 @@ def main():
             )
             model = get_peft_model(model, head_cfg)        
 
-        # For NSLoraLinear, we only train the LoRA parameters
+        # For STTLoraLinear, we only train the LoRA parameters
         trainable_params_list = []
         for name, param in model.named_parameters():
             param.requires_grad = False
 
-        # Enable training for NSLoraLinear parameters and lm_head
+        # Enable training for STTLoraLinear parameters and lm_head
         for name, module in model.named_modules():
-            if isinstance(module, NSLoraLinear) or 'lm_head' in name:
+            if isinstance(module, STTLoraLinear) or 'lm_head' in name:
                 for param_name, param in module.named_parameters():
                     if 'lora_A' in param_name or 'lora_B' in param_name:
                         param.requires_grad = True
@@ -1242,22 +1087,22 @@ def main():
             print("Phase 1: Merging LoRA adapters...")
             merged_count = 0
             for name, module in model.named_modules():
-                if isinstance(module, NSLoraLinear):
+                if isinstance(module, STTLoraLinear):
                     if not module.merge_weights:  # Only merge if not already merged
                         module.merge()
                         merged_count += 1
                         print(f"  Merged adapters for {name}")
-            print(f"Total merged NSLoraLinear modules: {merged_count}")
+            print(f"Total merged STTLoraLinear modules: {merged_count}")
             
             print("Phase 2: Restoring pruned neurons...")
             restored_count = 0
             for name, module in model.named_modules():
-                if isinstance(module, NSLoraLinear):
-                    # Restore the underlying NeuroselectiveLinear to full model
+                if isinstance(module, STTLoraLinear):
+                    # Restore the underlying STTLinear to full model
                     module.ns_linear.restore_full_weights()
                     restored_count += 1
                     print(f"  Restored neurons for {name}")
-            print(f"Total restored NSLoraLinear modules: {restored_count}")
+            print(f"Total restored STTLoraLinear modules: {restored_count}")
             print("Merging and restoration complete. Now proceeding with evaluation...")
         
         # Create a simple evaluation function for LLM
@@ -1265,13 +1110,13 @@ def main():
             # Store original forward methods
             original_forwards = {}
             
-            # Replace forward methods for NeuroselectiveLinear layers
+            # Replace forward methods for STTLinear layers
             for name, module in model.named_modules():
-                if isinstance(module, NeuroselectiveLinear):
+                if isinstance(module, STTLinear):
                     original_forwards[name] = module.forward
                     module.forward = module.forward_full
-                elif isinstance(module, NSLoraLinear):
-                    # For NSLoraLinear, use the underlying NeuroselectiveLinear's forward_full
+                elif isinstance(module, STTLoraLinear):
+                    # For STTLoraLinear, use the underlying STTLinear's forward_full
                     original_forwards[name] = module.forward
                     module.forward = module.ns_linear.forward_full
             
@@ -1288,7 +1133,7 @@ def main():
             finally:
                 # Restore original forward methods
                 for name, module in model.named_modules():
-                    if (isinstance(module, NeuroselectiveLinear) or isinstance(module, NSLoraLinear)) and name in original_forwards:
+                    if (isinstance(module, STTLinear) or isinstance(module, STTLoraLinear)) and name in original_forwards:
                         module.forward = original_forwards[name]
         
         restored_accuracy, restored_predictions = evaluate_llm_with_restored(
@@ -1411,7 +1256,7 @@ def main():
         # Step 3: Apply structural pruning
         print("[mag_tp] Applying structural pruning...")
         device_ = next(p for p in model.parameters() if p.is_floating_point()).device
-        nst = NeuroselectiveTransformer5(
+        nst = STTTransformer(
             model=model, 
             active_neurons=prune_indices,
             layer_name_map=layer_map, 
@@ -1531,7 +1376,7 @@ def main():
             param.requires_grad = False
             
         for name, module in model.named_modules():
-            if isinstance(module, NeuroselectiveLinear) or ('lm_head' in name):
+            if isinstance(module, STTLinear) or ('lm_head' in name):
                 for param in module.parameters():
                     param.requires_grad = True
                     trainable_params_list.append(param)

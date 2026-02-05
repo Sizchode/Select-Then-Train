@@ -3,12 +3,12 @@ import math
 import torch
 import torch.nn as nn
 
-from .mlps.stt_linear2 import NeuroselectiveLinear
+from .mlps.stt_linear2 import STTLinear
 
 
-class NSLoraLinear(nn.Module):
+class STTLoraLinear(nn.Module):
     """
-    LoRA implementation for NeuroselectiveLinear layer.
+    LoRA implementation for STTLinear layer.
     This implementation adapts LoRA to work with neuron-selective layers by:
     1. Applying LoRA only to the selected input and output features
     2. Maintaining the original pruning pattern while adding low-rank updates
@@ -16,17 +16,17 @@ class NSLoraLinear(nn.Module):
 
     def __init__(
             self,
-            stt_linear: NeuroselectiveLinear,
+            stt_linear: STTLinear,
             r: int = 16,
             lora_alpha: int = 32,
             lora_dropout: float = 0.1,
             merge_weights: bool = False,
     ):
         """
-        Initialize LoRA for a NeuroselectiveLinear layer.
+        Initialize LoRA for a STTLinear layer.
 
         Args:
-            stt_linear: The NeuroselectiveLinear layer to apply LoRA to
+            stt_linear: The STTLinear layer to apply LoRA to
             r: LoRA rank
             lora_alpha: LoRA alpha for scaling
             lora_dropout: Dropout probability for LoRA layers
@@ -38,7 +38,7 @@ class NSLoraLinear(nn.Module):
         self.lora_alpha = lora_alpha
         self.merge_weights = merge_weights
 
-        # Store the original NeuroselectiveLinear layer
+        # Store the original STTLinear layer
         self.stt_linear = stt_linear
 
         # Get dimensions from stt_linear
@@ -69,7 +69,7 @@ class NSLoraLinear(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
-        Forward pass combining the base NeuroselectiveLinear with LoRA.
+        Forward pass combining the base STTLinear with LoRA.
 
         Args:
             x: Input tensor of shape (..., original_in_features)

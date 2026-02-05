@@ -10,9 +10,9 @@ import numpy as np
 import torch.nn as nn
 from collections import defaultdict
 
-from stt.mlps.stt_linear import NeuroselectiveLinear
-from stt.mlps.stt_linear2 import NeuroselectiveLinear as NeuroselectiveLinear2
-from stt.stt_lora import NSLoraLinear
+from stt.mlps.stt_linear import STTLinear
+from stt.mlps.stt_linear2 import STTLinear as STTLinear2
+from stt.stt_lora import STTLoraLinear
 # from diet.tracker2 import NeuronTracker
 
 # Import from peft for LoRA
@@ -40,14 +40,14 @@ def print_model_layers(model):
 
 def adapt_neuron_indices_for_transformer(tracker_indices, model):
     """
-    Adapts indices from NeuronTracker format to NeuroselectiveModelTransformer format.
+    Adapts indices from STTTracker format to STTTransformer format.
 
     Args:
         tracker_indices: Dictionary of indices from NeuronTracker
         model: The model being transformed
 
     Returns:
-        Dictionary with keys properly formatted for NeuroselectiveModelTransformer
+        Dictionary with keys properly formatted for STTTransformer
     """
     transformer_indices = {}
 
@@ -386,20 +386,20 @@ def sample_active_set(dataloader, ratio=0.1, samples_per_class=None):
 
 def setup_stt_lora(model, lora_config):
     """
-    Apply NSLoraLinear wrapper to NeuroselectiveLinear layers.
+    Apply STTLoraLinear wrapper to STTLinear layers.
 
     Args:
         model: Model to adapt
         lora_config: Configuration with r, alpha, etc.
 
     Returns:
-        Model with NSLoraLinear wrappers applied
+        Model with STTLoraLinear wrappers applied
     """
-    from stt.stt_lora import NSLoraLinear
+    from stt.stt_lora import STTLoraLinear
 
-    # Wrap NeuroselectiveLinear layers with NSLoraLinear
+    # Wrap STTLinear layers with STTLoraLinear
     for name, module in model.named_modules():
-        if isinstance(module, NeuroselectiveLinear):
+        if isinstance(module, STTLinear):
             parent_name = '.'.join(name.split('.')[:-1])
             child_name = name.split('.')[-1]
             parent = model
@@ -407,15 +407,15 @@ def setup_stt_lora(model, lora_config):
                 if part:
                     parent = getattr(parent, part)
 
-            # Create NSLoraLinear wrapper
-            ns_lora = NSLoraLinear(
+            # Create STTLoraLinear wrapper
+            ns_lora = STTLoraLinear(
                 stt_linear=module,
                 r=lora_config['r'],
                 lora_alpha=lora_config['alpha'],
                 lora_dropout=lora_config['dropout'],
             )
             setattr(parent, child_name, ns_lora)
-            print(f"Applied NSLoraLinear to {name}")
+            print(f"Applied STTLoraLinear to {name}")
 
     return model
 
@@ -428,12 +428,12 @@ def setup_lora(model, lora_config, attn=False, ns=False):
         model: Model to adapt
         lora_config: Configuration with r, alpha, etc.
         attn: Whether to apply LoRA to attention layers
-        ns: Whether to apply NSLoraLinear to NeuroselectiveLinear layers
+        ns: Whether to apply STTLoraLinear to STTLinear layers
 
     Returns:
         Model with LoRA applied
     """
-    # First apply NSLoraLinear if requested
+    # First apply STTLoraLinear if requested
     if ns:
         model = setup_stt_lora(model, lora_config)
 
@@ -443,7 +443,7 @@ def setup_lora(model, lora_config, attn=False, ns=False):
         if not attn and "attn" in name or "attention" in name:
             continue
         if isinstance(module, nn.Linear):
-            if ns and isinstance(module, (NeuroselectiveLinear, NSLoraLinear)):
+            if ns and isinstance(module, (STTLinear, STTLoraLinear)):
                 continue
             exact_target_modules.append(name)
 
@@ -767,7 +767,7 @@ def bench_forward_image(model, eval_dataloader, iters=200, warmup=20, device="cu
 
 def pad_all_nslinear_modules(model, pad_to: int):
     """
-    Pad all NeuroselectiveLinear modules in MLP layers to multiples of pad_to.
+    Pad all STTLinear modules in MLP layers to multiples of pad_to.
     This modifies modules in-place.
     
     Args:
@@ -777,7 +777,7 @@ def pad_all_nslinear_modules(model, pad_to: int):
     Returns:
         Number of modules padded
     """
-    from diet.mlps.ns_linear2 import NeuroselectiveLinear as NeuroselectiveLinear2
+    from diet.mlps.ns_linear2 import STTLinear as STTLinear2
     
     padded_count = 0
     
@@ -819,7 +819,7 @@ def pad_all_nslinear_modules(model, pad_to: int):
             print(f"[Padding] Warning: Could not determine model structure. Model has: {dir(model)}")
             return 0
     
-    # Iterate through layers and pad NeuroselectiveLinear modules
+    # Iterate through layers and pad STTLinear modules
     for layer_idx, layer in enumerate(layers):
         # Get MLP module
         if hasattr(layer, 'mlp'):
@@ -850,13 +850,13 @@ def pad_all_nslinear_modules(model, pad_to: int):
             if isinstance(m, torch.nn.Linear):
                 continue  # Skip standard Linear
             
-            # Unwrap if needed (e.g., NSLoraLinear)
+            # Unwrap if needed (e.g., STTLoraLinear)
             base = getattr(m, "stt_linear", None)
             if base is not None:
                 m = base
             
-            # Only pad NeuroselectiveLinear modules (from ns_linear2)
-            if isinstance(m, NeuroselectiveLinear2):
+            # Only pad STTLinear modules (from ns_linear2)
+            if isinstance(m, STTLinear2):
                 # Debug info for first layer only
                 if layer_idx == 0:
                     w_shape = tuple(m.linear.weight.shape)
@@ -865,34 +865,34 @@ def pad_all_nslinear_modules(model, pad_to: int):
                 m.pad_weights(pad_to=pad_to)
                 padded_count += 1
     
-    print(f"[Padding] Padded {padded_count} NeuroselectiveLinear modules to multiples of {pad_to}")
+    print(f"[Padding] Padded {padded_count} STTLinear modules to multiples of {pad_to}")
     return padded_count
 
 
 def benchmark_nslinear_padding(model, device="cuda", pad_values=[None, 128, 256]):
     """
-    Benchmark NeuroselectiveLinear with different padding strategies.
+    Benchmark STTLinear with different padding strategies.
     
     Args:
-        model: The model to benchmark (should have NeuroselectiveLinear modules)
+        model: The model to benchmark (should have STTLinear modules)
         device: Device to run on
         pad_values: List of padding values to test (None = no padding, 128, 256, etc.)
     
     Returns:
         List of tuples: (name, throughput, latency_ms)
     """
-    from diet.mlps.ns_linear2 import NeuroselectiveLinear as NeuroselectiveLinear2
+    from diet.mlps.ns_linear2 import STTLinear as STTLinear2
     
-    # Save NeuroselectiveLinear modules info for restoration
+    # Save STTLinear modules info for restoration
     nslinear_modules_info = {}
     for name, module in model.named_modules():
-        if isinstance(module, NeuroselectiveLinear2):
+        if isinstance(module, STTLinear2):
             # Unwrap if needed
             base = getattr(module, "stt_linear", None)
             if base is not None:
                 module = base
             
-            if isinstance(module, NeuroselectiveLinear2):
+            if isinstance(module, STTLinear2):
                 nslinear_modules_info[name] = {
                     'module': module,
                     'original_in_features': module.original_in_features,
@@ -904,9 +904,9 @@ def benchmark_nslinear_padding(model, device="cuda", pad_values=[None, 128, 256]
                     'bias': module.linear.bias.clone() if module.linear.bias is not None else None,
                 }
     
-    # Helper function to restore NeuroselectiveLinear state
+    # Helper function to restore STTLinear state
     def restore_nslinear_state():
-        """Restore model to NeuroselectiveLinear state by recreating modules"""
+        """Restore model to STTLinear state by recreating modules"""
         for name, info in nslinear_modules_info.items():
             # Get parent module and attribute name
             parts = name.split('.')
@@ -915,8 +915,8 @@ def benchmark_nslinear_padding(model, device="cuda", pad_values=[None, 128, 256]
                 parent = getattr(parent, part)
             attr_name = parts[-1]
             
-            # Recreate NeuroselectiveLinear module
-            ns_linear = NeuroselectiveLinear2(
+            # Recreate STTLinear module
+            ns_linear = STTLinear2(
                 in_features=info['original_in_features'],
                 out_features=info['original_out_features'],
                 in_indices=info['in_indices'],
@@ -952,9 +952,9 @@ def benchmark_nslinear_padding(model, device="cuda", pad_values=[None, 128, 256]
             if device == "cuda":
                 torch.cuda.empty_cache()
                 torch.cuda.synchronize()
-            name = f"NeuroselectiveLinear (pad to {pad_to})"
+            name = f"STTLinear (pad to {pad_to})"
         else:
-            name = "NeuroselectiveLinear (no padding)"
+            name = "STTLinear (no padding)"
         
         # Calculate parameter count after padding (for inference parameter tracking)
         total_params = sum(p.numel() for p in model.parameters())

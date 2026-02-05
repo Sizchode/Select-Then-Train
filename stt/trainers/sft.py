@@ -5,6 +5,7 @@ from ..evaluate import evaluate_clutrr
 from ..evaluate.gen_eval import (
     evaluate_boolq, evaluate_arc
 )
+from ..mlps.stt_linear2 import STTLinear
 from trl import SFTTrainer
 import wandb
 
@@ -155,12 +156,12 @@ class CustomSFTTrainerV2(SFTTrainer):
             total_params = sum(p.numel() for p in self.model.parameters())
             trainable_params = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
 
-            # Count neurons per layer for NeuroselectiveMLPs
+            # Count neurons per layer for STT MLPs
             neuron_counts = {}
             llama_model = self.model.model if hasattr(self.model, "model") else self.model
 
             for i, layer in enumerate(llama_model.layers):
-                if hasattr(layer, 'mlp') and isinstance(layer.mlp, "NeuroselectiveMLP"):
+                if hasattr(layer, 'mlp') and isinstance(layer.mlp, STTLinear):
                     neuron_counts[f"layer_{i}"] = {
                         "active_neurons": layer.mlp.intermediate_size,
                         "total_neurons": layer.mlp.original_intermediate_size,

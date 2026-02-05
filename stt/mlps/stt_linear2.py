@@ -6,9 +6,9 @@ import torch.nn.functional as F
 logger = logging.getLogger(__name__)
 
 
-class NeuroselectiveLinear(nn.Module):
+class STTLinear(nn.Module):
     """
-    A simplified Linear layer that operates with reduced dimensions.
+    STT (Select-Then-Train) Linear layer that operates with reduced dimensions.
     """
 
     def __init__(
@@ -139,7 +139,7 @@ class NeuroselectiveLinear(nn.Module):
             out_indices: Optional[torch.Tensor] = None,
             **kwargs
     ):
-        """Creates a NeuroselectiveLinear layer from a standard nn.Linear layer."""
+        """Creates a STTLinear layer from a standard nn.Linear layer."""
         if not isinstance(original_module, nn.Linear):
             raise TypeError("original_module must be an instance of nn.Linear")
 
