@@ -649,13 +649,18 @@ def main():
 
     print("Starting training...")
     trainer.train()
-
-
     if args.use_wandb:
         wandb.log({"status": "training_finished", "evaluating": True})
 
-    is_pruned = args.mode != "baseline"
-    if is_pruned and args.eval_inference_time:
+    # Only test stt (with eval_inference_time) and baseline modes
+    is_stt_mode = args.mode == "stt"
+    
+    # Auto-enable eval_inference_time for stt mode
+    if is_stt_mode:
+        args.eval_inference_time = True
+    
+    if is_stt_mode and args.eval_inference_time:
+        # STT mode with True Pruning (inference_time=True)
         print("\n[Evaluation] Switching to inference_time mode (true pruning, no scatter)...")
         
         clear_cuda_cache_and_states(
@@ -680,18 +685,19 @@ def main():
         print(f"[Evaluation] Model switched to inference_time mode (gate/up only, down_proj remains False)")
         print(f"[Evaluation] Modified {modified_count} gate/up_proj modules to inference_time=True")
         
-        eval_mode_str = "True Pruning (inference_time=True)"
-    else:
-        print("\n[Evaluation] Using baseline mode (no pruning)")
-        eval_mode_str = "Baseline (no pruning)"
-    
-    if is_pruned and args.eval_inference_time:
+        # Apply padding for True Pruning mode
         print(f"\n[Padding] Applying padding 128 for True Pruning mode...")
         pad_all_nslinear_modules(model, pad_to=128)
         if device == "cuda":
             torch.cuda.empty_cache()
             torch.cuda.synchronize()
         print("[Padding] Padding applied successfully.")
+        
+        eval_mode_str = "True Pruning (inference_time=True)"
+    else:
+        # Baseline mode (or stt without eval_inference_time, treated as baseline)
+        print("\n[Evaluation] Using baseline mode (no pruning)")
+        eval_mode_str = "Baseline (no pruning)"
 
     def tokenize_collate_fn(batch):
         """Collate function that tokenizes text field from raw dataset"""
@@ -732,8 +738,9 @@ def main():
         collate_fn=tokenize_collate_fn
     ) if 'test_dataset' in locals() else None
     
+    # Performance benchmark
     if args.bench_linear_replace:
-        if is_pruned and args.eval_inference_time:
+        if is_stt_mode and args.eval_inference_time:
             print(f"\n[Benchmark] Testing True Pruning mode (with padding 128)...")
             throughput, latency_ms = bench_forward(model, eval_dataloader=eval_dataloader_bench, iters=200, warmup=20, device=device)
             print(f"  Throughput: {throughput:.2f} samples/sec (using real data)")
