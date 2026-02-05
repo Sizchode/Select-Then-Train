@@ -16,7 +16,7 @@ from stt.dataset.genloader_2 import BoolQ, ARC
 from stt.mlps.stt_linear2 import NeuroselectiveLinear
 from stt.stt_transformer import NeuroselectiveTransformer5
 from stt.stt_tracker import NeuronTracker6 as NeuronTracker
-from stt.ablation_tracker import NeuronTracker7 as AblationNeuronTracker
+from stt.ablation_tracker import NeuronTracker7 as AblationTracker
 from stt.wanda_adapt_tracker import WandaAdaptTracker
 from peft import get_peft_model, LoraConfig
 from stt.trainers import CustomSFTTrainerV2
@@ -84,9 +84,8 @@ def main():
     parser.add_argument('--eval_inference_time', action='store_true',
                         help='Use inference_time=True for evaluation (true pruning, no scatter). Default: False (scatter mode)')
     parser.add_argument('--bench_linear_replace', action='store_true',
-                        help='Benchmark NeuroselectiveLinear with different padding strategies (no padding, pad to 128, pad to 256).')
+                        help='Benchmark STTLinear with different padding strategies (no padding, pad to 128, pad to 256).')
     args = parser.parse_args()
-
     set_seed(args.seed)
     device = "cuda" if torch.cuda.is_available() else "cpu"
     model_map = {
@@ -94,14 +93,11 @@ def main():
         "qwen3":"Qwen/Qwen2.5-3B",
         "qwen7": "Qwen/Qwen2.5-7B",
     }
-
     args.model_name = model_map[args.model]
-
     run_name = args.wandb_run_name
     if run_name is None:
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
         run_name = f"{args.model_name.split('/')[-1]}_{args.task}_{args.mode}_lr{args.lr}_e{args.num_epoch}_s{args.seed}_{timestamp}"
-
     if args.use_wandb:
         wandb.init(
             project=args.wandb_project,
@@ -109,8 +105,6 @@ def main():
             name=run_name,
             config=vars(args)
         )
-
-# Removed unused active_thresholds logic
     tokenizer = AutoTokenizer.from_pretrained(args.model_name)
     model = AutoModelForCausalLM.from_pretrained(
             args.model_name,
@@ -148,7 +142,6 @@ def main():
         )
     else:
         raise ValueError(f"Unsupported task: {args.task}. Supported tasks: clutrr, boolq, arc-e, arc-c")
-
     datasets = data_loader.load_data(train_size=args.train_size)
 
     if args.dev_mode:
@@ -189,8 +182,6 @@ def main():
     optimizer = None
     pruner_stats = None
     if args.mode == "stt" or args.mode == "stt_lora":
-        print("--- Starting Neuron Activation Tracking ---")
-        print("[FLOPs] Measuring activation tracking cost...")
         # 1. Data Preparation
         sampled_subset = data_loader.get_active_set(args.active_sample_ratio)
         sampled_subset = sampled_subset['text']
@@ -213,7 +204,7 @@ def main():
                 "flops/selection_N": sel_stats["N"],
             })
         # 2. NeuronTracker Initialization
-        print("Initializing NeuronTracker...")
+        print("Initializing STT Tracker...")
         tracker = NeuronTracker(
             model=model,  
             tokenizer=tokenizer,
@@ -250,8 +241,8 @@ def main():
             model_to_prune = model
 
 
-        # 4. NeuroselectiveTransformer5 Initialization
-        print("Initializing NeuroselectiveTransformer5...")
+        # 4. STTTransformer Initialization
+        print("Initializing STTTransformer...")
         transformer = NeuroselectiveTransformer5(
             model=model_to_prune,
             active_neurons=active_indices_dict,
@@ -267,10 +258,10 @@ def main():
         model = pruned_model
         print("Model variable now points to the pruned model.")
 
-        # For nslora mode, apply NSLoraLinear to NeuroselectiveLinear layers
+        # For stt_lora mode, apply NSLoraLinear to STTLinear layers
         if args.mode == "stt_lora":
-            print("--- Applying NSLoraLinear to NeuroselectiveLinear layers ---")
-            # Convert NeuroselectiveLinear layers to NSLoraLinear
+            print("--- Applying NSLoraLinear to STTLinear layers ---")
+            # Convert STTLinear layers to NSLoraLinear
             for name, module in model.named_modules():
                 if isinstance(module, NeuroselectiveLinear):
                     parent_name = name.rsplit('.', 1)[0] if '.' in name else ''
@@ -281,7 +272,7 @@ def main():
                     if parent_name:
                         for part in parent_name.split('.'):
                             parent = getattr(parent, part)
-                    # Replace NeuroselectiveLinear with NSLoraLinear
+                    # Replace STTLinear with NSLoraLinear
                     ns_lora = NSLoraLinear(
                         stt_linear=module,
                         r=args.lora_r,
@@ -359,7 +350,7 @@ def main():
                 topk_idx = torch.topk(score, keep, largest=True).indices
                 mag_indices[lname] = topk_idx
 
-        # 3) structural pruning into a neuroselective subnetwork
+        # 3) structural pruning into a STT subnetwork
         nst = NeuroselectiveTransformer5(
             model=model,
             active_neurons=mag_indices,
@@ -371,7 +362,7 @@ def main():
         )
         model = nst.transform().to(device)
 
-        # 4) freeze all, then unfreeze pruned-MLP (NeuroselectiveLinear) + output head
+        # 4) freeze all, then unfreeze pruned-MLP (STTLinear) + output head
         for p in model.parameters():
             p.requires_grad = False
 
@@ -385,14 +376,14 @@ def main():
                     p.requires_grad = True
                     trainable_params_list.append(p)
         if not trainable_params_list:
-            raise RuntimeError("[mag_pt] no NeuroselectiveLinear/lm_head found as trainables.")
+            raise RuntimeError("[magnitude_pruning] no STTLinear/lm_head found as trainables.")
         optimizer = AdamW(trainable_params_list, lr=args.lr, weight_decay=args.wd)
 
         # 5) accounting + fresh optimizer (downstream code expects `optimizer`)
         final_param_count = sum(p.numel() for p in model.parameters())
         final_trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-        print(f"[mag_pt] Final model parameters: {final_param_count:,}")
-        print(f"[mag_pt] Final trainable parameters: {final_trainable_params:,}")
+        print(f"[magnitude_pruning] Final model parameters: {final_param_count:,}")
+        print(f"[magnitude_pruning] Final trainable parameters: {final_trainable_params:,}")
     elif args.mode == "wanda_adapt":
         sampled_subset = data_loader.get_active_set(args.active_sample_ratio)
         sampled_subset = sampled_subset['text']
@@ -421,7 +412,7 @@ def main():
         print("Running activation tracking for budget...")
         layer_map = tracker_budget.get_layer_name_map()
         active_indices_dict = tracker_budget.get_active_indices(dataloader=active_dataloader) or {}
-        print(f"[wanda_p] active layers (raw): {len(active_indices_dict)}")
+        print(f"[wanda_adapt] active layers (raw): {len(active_indices_dict)}")
 
         k_map = {}
         for ln, idx in active_indices_dict.items():
@@ -469,7 +460,7 @@ def main():
 
         for ln, ids in wanda_indices.items():
             assert len(ids) == min(k_map.get(ln, 0), len(wanda_indices_all.get(ln, []))), \
-                f"[wanda_p] budget mismatch @ {ln}: want={k_map.get(ln,0)} got={len(ids)}"
+                f"[wanda_adapt] budget mismatch @ {ln}: want={k_map.get(ln,0)} got={len(ids)}"
 
         nst = NeuroselectiveTransformer5(
             model=model,
@@ -495,14 +486,14 @@ def main():
                     trainable_params_list.append(p)
 
         if not trainable_params_list:
-            raise RuntimeError("[wanda_p] no NeuroselectiveLinear/lm_head found as trainables.")
+            raise RuntimeError("[wanda_adapt] no STTLinear/lm_head found as trainables.")
 
         optimizer = AdamW(trainable_params_list, lr=args.lr, weight_decay=args.wd)
 
         final_param_count = sum(p.numel() for p in model.parameters())
         final_trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-        print(f"[wanda_p] Final model parameters: {final_param_count:,}")
-        print(f"[wanda_p] Final trainable parameters: {final_trainable_params:,}")
+        print(f"[wanda_adapt] Final model parameters: {final_param_count:,}")
+        print(f"[wanda_adapt] Final trainable parameters: {final_trainable_params:,}")
     else:
         print(f"--- Running in {args.mode} mode (full finetuning) ---")
         model = model.to(device)
