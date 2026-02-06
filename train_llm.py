@@ -57,8 +57,6 @@ def main():
                         help='Number of steps to accumulate gradients')
     parser.add_argument('--active_threshold', type=float, default=0.01,
                         help='Activation threshold for finding active neurons')
-    parser.add_argument('--use_abs_threshold', action='store_true',
-                        help='Use absolute threshold values for activation')
     parser.add_argument('--active_sample_ratio', type=float, default=0.1,
                         help='Sample ratio of training data for activation tracking')
     parser.add_argument("--topk_ratio",type=float, default=0.30, metavar="R",
@@ -205,9 +203,7 @@ def main():
             tokenizer=tokenizer,
             threshold=args.active_threshold,
             topk_ratio=args.topk_ratio, 
-            use_abs_threshold=args.use_abs_threshold,
             device=device,
-            track_attention_proj=args.tune_attn,
             verbose=True
         )
 
@@ -240,7 +236,6 @@ def main():
             active_neurons=active_indices_dict,
             layer_name_map=layer_map,
             verbose=True,
-            tune_pruned=False,
             device=device,
             inference_time=False  
         )
@@ -297,9 +292,7 @@ def main():
             tokenizer=tokenizer,
             threshold=args.active_threshold,
             topk_ratio=args.topk_ratio, 
-            use_abs_threshold=args.use_abs_threshold,
             device=device,
-            track_attention_proj=args.tune_attn,
             verbose=True
         )
 
@@ -340,7 +333,6 @@ def main():
             model=model,
             active_neurons=mag_indices,
             layer_name_map=layer_map,
-            tune_pruned=False,
             device=device,
             verbose=True,
             inference_time=False  
@@ -388,9 +380,7 @@ def main():
             tokenizer=tokenizer,
             threshold=args.active_threshold,
             topk_ratio=args.topk_ratio,           
-            use_abs_threshold=args.use_abs_threshold,
             device=device,
-            track_attention_proj=args.tune_attn,
             verbose=True
         )
 
@@ -412,7 +402,6 @@ def main():
             tokenizer=tokenizer,
             topk_ratio=1.0,
             device=device,
-            track_attention_proj=args.tune_attn,
             verbose=True
         )
         wanda_calib_batches = int(getattr(args, "wanda_calib_batches", 1))
@@ -451,10 +440,9 @@ def main():
             model=model,
             active_neurons=wanda_indices,
             layer_name_map=layer_map,
-            tune_pruned=False,
             device=device,
             verbose=True,
-            inference_time=False  
+            inference_time=False
         )
         model = nst.transform().to(device)
 

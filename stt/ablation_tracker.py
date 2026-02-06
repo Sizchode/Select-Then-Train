@@ -17,13 +17,11 @@ MLP_FIRST_LAYER_PATTERNS = [
 
 
 class AblationTracker:
-    def __init__(self, model: nn.Module, tokenizer=None, threshold=0.01, topk_ratio: float = 0.10, use_abs_threshold=True, device="cuda", track_attention_proj=False, verbose=False, use_abs_for_rate=False):
+    def __init__(self, model: nn.Module, tokenizer=None, threshold=0.01, topk_ratio: float = 0.10, device="cuda", verbose=False, use_abs_for_rate=False):
         self.model = model
         self.tokenizer = tokenizer
         self.device = device
         self.threshold = threshold
-        self.use_abs_threshold = use_abs_threshold
-        self.track_attention_proj = track_attention_proj
         self.topk_ratio = topk_ratio
         self.verbose = verbose
         self.use_abs_for_rate = use_abs_for_rate  # If True, use abs for rate calculation (default: False to use signed values)

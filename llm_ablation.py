@@ -65,15 +65,12 @@ def main():
 
     parser.add_argument('--active_threshold', type=float, default=0.01,
                         help='Activation threshold for finding active neurons')
-    parser.add_argument('--use_abs_threshold', action='store_true',
-                        help='Use absolute threshold values for activation')
     parser.add_argument('--active_sample_ratio', type=float, default=0.1,
                         help='Sample ratio of training data for activation tracking')
     parser.add_argument("--topk_ratio",type=float, default=0.30, metavar="R",
                         help="Fraction (0,1] of neurons kept per score when selecting active neurons")
 
 # Removed unused parameters (aggregation_mode, hidden_dim_patterns, input_conn_patterns, output_conn_patterns)
-    parser.add_argument('--tune_pruned', action='store_true', help='Make pruned layers trainable')
 
     parser.add_argument('--lora_r', type=int, default=16,
                         help='Rank of the LoRA updates')
@@ -229,9 +226,7 @@ def main():
                 tokenizer=tokenizer,
                 threshold=args.active_threshold,
                 topk_ratio=args.topk_ratio, 
-                use_abs_threshold=args.use_abs_threshold,
                 device=device,
-                track_attention_proj=args.tune_attn,
                 verbose=False # Keep the log clean during the loop
             )
             
@@ -318,9 +313,7 @@ def main():
             tokenizer=tokenizer,
             threshold=args.active_threshold,
             topk_ratio=args.topk_ratio,               # this sets the per-layer K for the budget
-            use_abs_threshold=args.use_abs_threshold,
             device=device,
-            track_attention_proj=args.tune_attn,
             verbose=False
         )
         ns_active = tracker_budget.get_active_indices(dataloader=active_dataloader)
@@ -334,9 +327,7 @@ def main():
             tokenizer=tokenizer,
             threshold=args.active_threshold,
             topk_ratio=args.topk_ratio,  # use the same ratio as NS
-            use_abs_threshold=args.use_abs_threshold,
             device=device,
-            track_attention_proj=args.tune_attn,
             verbose=False
         )
         # Use sparsity-based selection with same threshold
@@ -368,7 +359,7 @@ def main():
         nst = STTTransformer(
             model, active_neurons=sel_indices,
             layer_name_map=layer_name_map,
-            tune_pruned=False, device=device, verbose=True
+            device=device, verbose=True
         )
         model = nst.transform().to(device)
         for name, param in model.named_parameters():
@@ -393,9 +384,7 @@ def main():
             tokenizer=tokenizer,
             threshold=args.active_threshold,
             topk_ratio=args.topk_ratio,               # this sets the per-layer K for the budget
-            use_abs_threshold=args.use_abs_threshold,
             device=device,
-            track_attention_proj=args.tune_attn,
             verbose=False
         )
         ns_active = tracker_budget.get_active_indices(dataloader=active_dataloader)
@@ -409,9 +398,7 @@ def main():
             tokenizer=tokenizer,
             threshold=args.active_threshold,
             topk_ratio=args.topk_ratio,  # use the same ratio as NS
-            use_abs_threshold=args.use_abs_threshold,
             device=device,
-            track_attention_proj=args.tune_attn,
             verbose=False
         )
         # Use activation-rate-based selection (sparsity) with same threshold
@@ -443,7 +430,7 @@ def main():
         nst = STTTransformer(
             model, active_neurons=sel_indices,
             layer_name_map=layer_name_map,
-            tune_pruned=False, device=device, verbose=True
+            device=device, verbose=True
         )
         model = nst.transform().to(device)
         for name, param in model.named_parameters():
@@ -460,8 +447,7 @@ def main():
         active_dataloader = torch.utils.data.DataLoader(sampled_subset, batch_size=args.eval_batch, shuffle=False)
         tracker = NeuronTracker(model=model, tokenizer=tokenizer,
                              threshold=args.active_threshold, topk_ratio=args.topk_ratio,
-                             use_abs_threshold=args.use_abs_threshold, device=device,
-                             track_attention_proj=args.tune_attn, verbose=True)
+                             device=device, verbose=True)
         layer_map = tracker.get_layer_name_map()
         active_indices = tracker.get_active_indices(dataloader=active_dataloader) or {}
         k_map = {ln: int(getattr(idx, "numel", lambda: len(idx))()) for ln, idx in active_indices.items()}
@@ -484,8 +470,7 @@ def main():
         tracker = NeuronTracker(
              model=model, tokenizer=tokenizer,
              threshold=args.active_threshold, topk_ratio=args.topk_ratio,
-             use_abs_threshold=args.use_abs_threshold, device=device,
-             track_attention_proj=args.tune_attn, verbose=True
+             device=device, verbose=True
         )
         layer_map = tracker.get_layer_name_map()
         active_indices = tracker.get_active_indices(dataloader=active_dataloader) or {}
@@ -716,7 +701,7 @@ def main():
           sampled_subset = data_loader.get_active_set(args.active_sample_ratio)['text']
           active_dataloader = torch.utils.data.DataLoader(sampled_subset, batch_size=args.eval_batch, shuffle=False)
           tracker_w = NeuronTracker(model=model, tokenizer=tokenizer, topk_ratio=1.0,
-                                   device=device, track_attention_proj=args.tune_attn, verbose=True)
+                                   device=device, verbose=True)
           wanda_all = tracker_w.get_wanda_indices(
               dataloader=active_dataloader,
               scan_batches=int(getattr(args, "wanda_calib_batches", 1))
@@ -757,7 +742,6 @@ def main():
             model=model, 
             active_neurons=prune_indices,
             layer_name_map=layer_map, 
-            tune_pruned=False,
             device=device_, 
             verbose=True
         )

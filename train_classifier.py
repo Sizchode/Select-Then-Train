@@ -77,8 +77,6 @@ def main():
     # Neuron selection options
     parser.add_argument("--threshold", type=float, default=0.01,
                         help="Activation threshold for neuron selection")
-    parser.add_argument("--use_abs_threshold", action="store_true",
-                        help="Use absolute values for thresholding")
     parser.add_argument("--sample_ratio", type=float, default=0.005,
                         help="Ratio of training data to sample for finding active neurons")
     parser.add_argument("--disable_dropout", action="store_true",
@@ -327,15 +325,13 @@ def main():
         print("\n--- Performing neuron selection ---")
 
         tracker = NeuronTracker(
-                        model=model,
-                        tokenizer=None,                        
+            model=model,
+            tokenizer=None,                        
             threshold=args.threshold,
-                        topk_ratio=args.topk_ratio, 
-                        use_abs_threshold=args.use_abs_threshold,
-                        device=device,
-            track_attention_proj=args.tune_attn,
-                        verbose=True
-                    )
+            topk_ratio=args.topk_ratio, 
+            device=device,
+            verbose=True
+        )
 
         active_neurons = tracker.get_active_indices(dataloader=active_dataloader)
         layer_name_map = tracker.get_layer_name_map()
@@ -362,7 +358,6 @@ def main():
             active_neurons=active_neurons,  
             layer_name_map=layer_name_map, 
             verbose=True,
-            tune_pruned=False, 
             device=device,
             inference_time=False  
         )
@@ -460,9 +455,7 @@ def main():
             tokenizer=tokenizer if args.modality == "text" else None,  
             threshold=args.threshold,                   
             topk_ratio=args.topk_ratio,             
-            use_abs_threshold=args.use_abs_threshold,
             device=device,
-            track_attention_proj=args.tune_attn,
             verbose=True
         )
 
@@ -479,8 +472,7 @@ def main():
             active_neurons=active_neurons,  
             layer_name_map=layer_name_map,  
             verbose=True,
-            tune_pruned=False,  
-            device=device,  
+            device=device,
             inference_time=False  
         )
 
@@ -529,7 +521,7 @@ def main():
     elif args.mode == "magnitude_pruning":
         sel_loader = sample_active_set(non_shuffle_train_dataloader, ratio=float(args.sample_ratio))
         tracker = NeuronTracker(model, threshold=0.01, topk_ratio=args.topk_ratio,
-                                device=device, track_attention_proj=False, verbose=False)
+                                device=device, verbose=False)
         active = tracker.get_active_indices(dataloader=sel_loader)
         layer_name_map = tracker.get_layer_name_map()
         k_map = {ln: len(idx) for ln, idx in active.items()}  
@@ -546,7 +538,7 @@ def main():
                 mag_indices[lname] = topk
         nst = STTTransformer(model, active_neurons=mag_indices,
                                         layer_name_map=layer_name_map,
-                                        tune_pruned=False, device=device, verbose=True,
+                                        device=device, verbose=True,
                                         inference_time=False  
                                         )
         model = nst.transform().to(device).to(torch.float32)
@@ -563,7 +555,7 @@ def main():
         sel_loader = sample_active_set(non_shuffle_train_dataloader, ratio=float(args.sample_ratio))
         tracker_budget = NeuronTracker(
             model, threshold=0.01, topk_ratio=args.topk_ratio,
-            device=device, track_attention_proj=False, verbose=False
+            device=device, verbose=False
         )
         active = tracker_budget.get_active_indices(dataloader=sel_loader)
         layer_name_map = tracker_budget.get_layer_name_map()
@@ -594,7 +586,7 @@ def main():
         nst = STTTransformer(
             model, active_neurons=sel_indices,
             layer_name_map=layer_name_map,
-            tune_pruned=False, device=device, verbose=True,
+            device=device, verbose=True,
             inference_time=False  # Training: use scatter mode
         )
         model = nst.transform().to(device).to(torch.float32)
@@ -629,7 +621,7 @@ def main():
 
         sel_loader = sample_active_set(non_shuffle_train_dataloader, ratio=args.sample_ratio)
         tracker = NeuronTracker(model, threshold=0.01, topk_ratio=args.topk_ratio,
-                            device=device, track_attention_proj=False, verbose=False)
+                            device=device, verbose=False)
         active = tracker.get_active_indices(dataloader=sel_loader)
         layer_name_map = tracker.get_layer_name_map()
         k_map = {ln: len(idx) for ln, idx in active.items()}
@@ -1001,7 +993,6 @@ def main():
         "dataset": args.dataset,
         "mode": args.mode,
         "threshold": args.threshold if args.mode == "stt" else None,
-        "use_abs_threshold": args.use_abs_threshold if args.mode == "stt" else None,
         "lora_r": args.lora_r if "lora" in args.mode else None,
         "lora_alpha": args.lora_alpha if "lora" in args.mode else None,
     }

@@ -24,13 +24,11 @@ class STTTransformer:
             layer_name_map: Optional[Dict[nn.Module, str]] = None,
             device: Optional[Union[str, torch.device]] = None,
             verbose: bool = False,
-            tune_pruned: bool = False,
             inference_time: bool = False,
     ):
         self.model = model
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         self.verbose = verbose
-        self.tune_pruned = tune_pruned
         self.layer_name_map = layer_name_map
         self.inference_time = inference_time
 

@@ -69,10 +69,11 @@ This section provides code examples for applying STT to different model types. T
 
 ```python
 import torch
+from torch.utils.data import DataLoader
+from transformers import AutoModelForImageClassification
 from stt.stt_tracker import STTTracker
 from stt.stt_transformer import STTTransformer
 from stt.mlps.stt_linear2 import STTLinear
-from transformers import AutoModelForImageClassification
 
 # 1. Load your model
 model = AutoModelForImageClassification.from_pretrained("google/vit-base-patch16-224")
@@ -80,24 +81,20 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 model = model.to(device)
 
 # 2. Prepare a small sample of training data for neuron selection
-# active_dataloader should contain a subset of your training data
-from torch.utils.data import DataLoader
-active_dataloader = DataLoader(train_dataset, batch_size=32, shuffle=False)
-active_dataloader = list(active_dataloader)[:100]  # Use first 100 batches
+# selection_dataloader should contain a subset of your training data
+selection_dataloader = DataLoader(train_dataset, batch_size=32, shuffle=False)
+selection_dataloader = list(selection_dataloader)[:100]  # Use first 100 batches
 
 # 3. Initialize STTTracker and select neurons
 tracker = STTTracker(
     model=model,
-    tokenizer=None,  # No tokenizer for image models
-    threshold=0.01,
-    topk_ratio=0.1,  # Keep top 10% of neurons
-    use_abs_threshold=True,
-    device=device,
-    track_attention_proj=False,
-    verbose=True
+    tokenizer=None,
+    threshold=0.01,  
+    topk_ratio=0.1,  # customize sparsity
+    device=device  
 )
 
-active_neurons = tracker.get_active_indices(dataloader=active_dataloader)
+active_neurons = tracker.get_active_indices(dataloader=selection_dataloader)
 layer_name_map = tracker.get_layer_name_map()
 
 # 4. Transform the model using STTTransformer
@@ -106,7 +103,6 @@ transformer = STTTransformer(
     active_neurons=active_neurons,
     layer_name_map=layer_name_map,
     verbose=True,
-    tune_pruned=False,
     device=device,
     inference_time=False  # Set to True for faster inference
 )
@@ -129,16 +125,27 @@ for name, module in pruned_model.named_modules():
 # 6. Train the model as usual
 optimizer = torch.optim.AdamW(pruned_model.parameters(), lr=1e-4)
 # ... training loop ...
+
+# 7. After training, switch to inference mode
+pruned_model.eval()  # Set to evaluation mode
+
+# Enable inference_time for all STTLinear layers
+for name, module in pruned_model.named_modules():
+    if isinstance(module, STTLinear):
+        module.inference_time = True
+        # Apply padding for optimal GPU performance
+        module.pad_weights(pad_to=128)
 ```
 
 ### For BERT and Text Classification Models
 
 ```python
 import torch
+from torch.utils.data import DataLoader
+from transformers import AutoModelForSequenceClassification, AutoTokenizer
 from stt.stt_tracker import STTTracker
 from stt.stt_transformer import STTTransformer
 from stt.mlps.stt_linear2 import STTLinear
-from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
 # 1. Load model and tokenizer
 model_name = "bert-base-uncased"
@@ -148,8 +155,8 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 model = model.to(device)
 
 # 2. Prepare active dataloader (subset of training data)
-active_dataloader = DataLoader(train_dataset, batch_size=32, shuffle=False)
-active_dataloader = list(active_dataloader)[:100]
+selection_dataloader = DataLoader(train_dataset, batch_size=32, shuffle=False)
+selection_dataloader = list(selection_dataloader)[:100]
 
 # 3. Initialize STTTracker
 tracker = STTTracker(
@@ -157,13 +164,11 @@ tracker = STTTracker(
     tokenizer=tokenizer,  # Tokenizer required for text models
     threshold=0.01,
     topk_ratio=0.1,
-    use_abs_threshold=True,
     device=device,
-    track_attention_proj=False,
     verbose=True
 )
 
-active_neurons = tracker.get_active_indices(dataloader=active_dataloader)
+active_neurons = tracker.get_active_indices(dataloader=selection_dataloader)
 layer_name_map = tracker.get_layer_name_map()
 
 # 4. Transform model
@@ -172,7 +177,6 @@ transformer = STTTransformer(
     active_neurons=active_neurons,
     layer_name_map=layer_name_map,
     verbose=True,
-    tune_pruned=False,
     device=device,
     inference_time=False
 )
@@ -194,17 +198,28 @@ for name, module in pruned_model.named_modules():
 # 6. Train the model
 optimizer = torch.optim.AdamW(pruned_model.parameters(), lr=1e-4)
 # ... training loop ...
+
+# 7. After training, switch to inference mode
+pruned_model.eval()  # Set to evaluation mode
+
+# Enable inference_time for all STTLinear layers
+for name, module in pruned_model.named_modules():
+    if isinstance(module, STTLinear):
+        module.inference_time = True
+        # Apply padding for optimal GPU performance
+        module.pad_weights(pad_to=128)
 ```
 
 ### For Large Language Models (LLMs)
 
 ```python
 import torch
+from torch.utils.data import DataLoader
+from transformers import AutoModelForCausalLM, AutoTokenizer
 from stt.stt_tracker import STTTracker
 from stt.stt_transformer import STTTransformer
 from stt.mlps.stt_linear2 import STTLinear
 from stt.stt_lora import STTLoraLinear
-from transformers import AutoModelForCausalLM, AutoTokenizer
 
 # 1. Load model and tokenizer
 model_name = "Qwen/Qwen2-0.5B"
@@ -216,7 +231,7 @@ model = model.to(device)
 # 2. Prepare active dataloader (subset of training data)
 # For LLMs, you typically use a small sample ratio (e.g., 1% of training data)
 active_subset = train_dataset[:len(train_dataset) // 100]  # 1% sample
-active_dataloader = DataLoader(active_subset, batch_size=8)
+selection_dataloader = DataLoader(active_subset, batch_size=8)
 
 # 3. Initialize STTTracker
 tracker = STTTracker(
@@ -224,13 +239,11 @@ tracker = STTTracker(
     tokenizer=tokenizer,
     threshold=0.01,
     topk_ratio=0.1,
-    use_abs_threshold=True,
     device=device,
-    track_attention_proj=False,
     verbose=True
 )
 
-active_neurons = tracker.get_active_indices(dataloader=active_dataloader)
+active_neurons = tracker.get_active_indices(dataloader=selection_dataloader)
 layer_name_map = tracker.get_layer_name_map()
 
 # 4. Transform model
@@ -239,7 +252,6 @@ transformer = STTTransformer(
     active_neurons=active_neurons,
     layer_name_map=layer_name_map,
     verbose=True,
-    tune_pruned=False,
     device=device,
     inference_time=False
 )
@@ -281,6 +293,19 @@ for name, module in pruned_model.named_modules():
 
 # 7. Train with your preferred training framework (e.g., HuggingFace Trainer)
 # ... training setup ...
+
+# 8. After training, switch to inference mode
+pruned_model.eval()  # Set to evaluation mode
+
+# Enable inference_time only for gate_proj and up_proj (not down_proj)
+for name, module in pruned_model.named_modules():
+    if isinstance(module, STTLinear):
+        if any(key in name for key in ["gate_proj", "up_proj"]):
+            module.inference_time = True
+            # Apply padding for optimal GPU performance
+            module.pad_weights(pad_to=128)
+        elif 'down_proj' in name:
+            module.inference_time = False  # Keep scatter mode for down layers
 ```
 
 ### Key Parameters
@@ -288,7 +313,6 @@ for name, module in pruned_model.named_modules():
 - **`topk_ratio`**: Fraction of neurons to keep (e.g., 0.1 = keep top 10%)
 - **`threshold`**: Activation threshold for neuron selection
 - **`inference_time`**: If `True`, uses direct pruning for faster inference (requires padding). If `False`, uses scatter mode for flexible training.
-- **`tune_pruned`**: Whether to fine-tune the pruned weights (typically `False`)
 
 For more details, refer to the implementation in `train_classifier.py` (ViTs/BERTs) and `train_llm.py` (LLMs).
 

@@ -15,12 +15,11 @@ MLP_FIRST_LAYER_PATTERNS = [
 
 
 class WandaAdaptTracker:
-    def __init__(self, model: nn.Module, tokenizer=None, topk_ratio: float = 0.10, device="cuda", track_attention_proj=False, verbose=False):
+    def __init__(self, model: nn.Module, tokenizer=None, topk_ratio: float = 0.10, device="cuda", verbose=False):
         self.model = model
         self.tokenizer = tokenizer
         self.device = device
         self.topk_ratio = topk_ratio
-        self.track_attention_proj = track_attention_proj
         self.verbose = verbose
         
         # Build layer name mapping
