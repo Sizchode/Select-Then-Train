@@ -30,7 +30,9 @@ from util.torch_flops import (
     flops_train_step,    
     extract_inputs_from_batch,
     LLM_MAXLEN,
-    TEXT_MAXLEN
+    TEXT_MAXLEN,
+    infer_vit_seq_len,
+    peek_vit_dataloader
 )
 import numpy as np
 import seaborn as sns
@@ -58,100 +60,6 @@ from torch.utils.data import DataLoader
 from torch import nn
 MAG_TP_K_MAP = None
 MAG_TP_LAYER_NAME_MAP = None
-
-
-def infer_vit_seq_len(model: Optional[nn.Module] = None,
-                      H: Optional[int] = None,
-                      W: Optional[int] = None,
-                      add_cls: bool = True,
-                      default_image_size: int = 224,
-                      default_patch: int = 16) -> int:
-
-    img_size = None
-    patch = None
-    if model is not None and hasattr(model, "config"):
-        cfg = model.config
-        img_size = getattr(cfg, "image_size", img_size)
-        patch    = getattr(cfg, "patch_size", patch)
-        vcfg     = getattr(cfg, "vision_config", None)
-        if vcfg is not None:
-            img_size = getattr(vcfg, "image_size", img_size)
-            patch    = getattr(vcfg, "patch_size", patch)
-    if H is None or W is None:
-        s = int(img_size) if img_size is not None else int(default_image_size)
-        H = H or s
-        W = W or s
-    P = int(patch) if patch is not None else int(default_patch)
-    h = math.ceil(H / P)
-    w = math.ceil(W / P)
-    toks = h * w + (1 if add_cls else 0)
-    return int(toks)
-
-def peek_vit_dataloader(dl: DataLoader,
-                        model: Optional[nn.Module] = None,
-                        n_batches: int = 2,
-                        prefix: str = "[VIT]") -> int:
-
-    print(f"{prefix} dl.type = {type(dl)}  dataset.type = {type(getattr(dl,'dataset', None))}")
-    try:
-        print(f"{prefix} dataset.len = {len(dl.dataset)}  batch_size = {getattr(dl, 'batch_size', None)}")
-    except Exception:
-        pass
-    cf = getattr(dl, "collate_fn", None)
-    print(f"{prefix} collate_fn = {getattr(cf, '__name__', str(cf))}")
-
-    D_partial = 0
-    for i, batch in enumerate(dl):
-        if i >= n_batches:
-            break
-        print(f"{prefix} ----- batch {i} -----")
-        H = W = None
-        B = None
-
-        if isinstance(batch, dict):
-            keys = list(batch.keys())
-            print(f"{prefix} dict.keys = {keys}")
-            if "pixel_values" in batch and torch.is_tensor(batch["pixel_values"]):
-                pv = batch["pixel_values"]  # (B,C,H,W)
-                B, C, H, W = int(pv.size(0)), int(pv.size(1)), int(pv.size(2)), int(pv.size(3))
-                print(f"{prefix} pixel_values: shape={(B,C,H,W)} dtype={pv.dtype} device={pv.device}")
-            else:
-                for k, v in batch.items():
-                    if torch.is_tensor(v) and v.dim() == 4:
-                        B, C, H, W = int(v.size(0)), int(v.size(1)), int(v.size(2)), int(v.size(3))
-                        print(f"{prefix} {k}: shape={(B,C,H,W)} dtype={v.dtype} device={v.device}")
-                        break
-
-        elif isinstance(batch, (list, tuple)) and len(batch) > 0:
-            x = batch[0]
-            if torch.is_tensor(x) and x.dim() == 4:
-                B, C, H, W = int(x.size(0)), int(x.size(1)), int(x.size(2)), int(x.size(3))
-                print(f"{prefix} tensor[0]: shape={(B,C,H,W)} dtype={x.dtype} device={x.device}")
-            elif isinstance(x, (list, tuple)) and len(x) > 0:
-                try:
-                    im0 = x[0]
-                    if hasattr(im0, "size"):
-                        W, H = im0.size  # PIL (W,H)
-                        B = len(x)
-                        print(f"{prefix} PIL list: B={B} HxW={H}x{W}")
-                except Exception:
-                    print(f"{prefix} unknown list/tuple content; preview type={type(x)}")
-            else:
-                print(f"{prefix} unsupported batch content: type={type(x)}")
-
-        else:
-            print(f"{prefix} unsupported batch type: {type(batch)}")
-
-        if B is not None and H is not None and W is not None:
-            seq_len = infer_vit_seq_len(model=model, H=H, W=W, add_cls=True)
-            D_this = int(B * seq_len)
-            D_partial += D_this
-            print(f"{prefix} seq_len_per_image ≈ {seq_len}  -> batch_tokens ≈ {D_this}")
-        else:
-            print(f"{prefix} cannot infer (B,H,W); batch_tokens += 0")
-
-    print(f"{prefix} D_partial (first {n_batches} batches) ≈ {D_partial}")
-    return D_partial
 
 def main():
     parser = argparse.ArgumentParser(description="Train Classifier with Neuron Selection")
@@ -247,11 +155,6 @@ def main():
     parser.add_argument("--source_ratio", type=float, default=None,
                         help="Num to keep for source network")
     
-    # True pruning and padding options
-    parser.add_argument("--eval_inference_time", action="store_true",
-                        help="Switch to inference_time mode (true pruning, no scatter) for final evaluation")
-    parser.add_argument("--bench_linear_replace", action="store_true",
-                        help="Run benchmark tests for STTLinear padding strategies")
 
     args = parser.parse_args()
 
@@ -1136,16 +1039,9 @@ def main():
             "train_runtime": pure_train_time,
             "eval_runtime_total": total_eval_time
         })
-
-    # Determine evaluation mode and run benchmark
-    is_pruned = args.mode != "baseline"
-    if is_pruned and args.eval_inference_time:
-        # Note: For ViT/BERT, only fc1/intermediate.dense should use inference_time=True
-        # fc2/output.dense should remain False (it outputs full dimensions)
-        # For LLM, gate_proj and up_proj use inference_time=True, down_proj remains False
-        print("\n[Evaluation] Switching to inference_time mode (true pruning, no scatter)...")
-        
-        # Clear CUDA cache and optimizer states before switching
+    is_stt_mode = args.mode == "stt"    
+    if is_stt_mode:
+        print("\n[Evaluation] inference throughput for pruning...")
         clear_cuda_cache_and_states(
             optimizer=optimizer if 'optimizer' in locals() else None,
             trainer=None,  # train_classifier doesn't use trainer object
@@ -1153,13 +1049,9 @@ def main():
             device=device,
             verbose=True
         )
-        
         modified_count = 0
         for name, module in model.named_modules():
             if isinstance(module, STTLinear):
-                # For LLM: gate_proj and up_proj use inference_time=True
-                # For ViT/BERT: fc1/intermediate.dense use inference_time=True
-                # down_proj/fc2/output.dense should remain False (it outputs full dimensions)
                 is_gate_or_up = (
                     'gate_proj' in name or 'up_proj' in name or  # LLM
                     'fc1' in name or 'intermediate.dense' in name or 'intermediate_dense' in name  # ViT/BERT
@@ -1175,57 +1067,35 @@ def main():
                 elif is_down:
                     module.inference_time = False  # Explicitly set to False
         
-        # Clear cache again after switching
         if device == "cuda":
             torch.cuda.empty_cache()
             torch.cuda.synchronize()
-        
         print(f"[Evaluation] Model switched to inference_time mode")
         print(f"[Evaluation] Modified {modified_count} gate/up/fc1/intermediate modules to inference_time=True")
-        
-        eval_mode_str = "True Pruning (inference_time=True)"
-    else:
-        print("\n[Evaluation] Using baseline mode (no pruning)")
-        eval_mode_str = "Baseline (no pruning)"
-    
-    # Apply padding for True Pruning mode before benchmark and final evaluation
-    if is_pruned and args.eval_inference_time:
         print(f"\n[Padding] Applying padding 128 for True Pruning mode...")
         pad_all_nslinear_modules(model, pad_to=128)
         if device == "cuda":
             torch.cuda.empty_cache()
             torch.cuda.synchronize()
         print("[Padding] Padding applied successfully.")
+        
+        eval_mode_str = "True Pruning (inference_time=True)"
+    else:
+        print("\n[Evaluation] Using baseline mode (no pruning)")
+        eval_mode_str = "Baseline (no pruning)"
     
-    # Benchmark based on mode and arguments
-    if args.bench_linear_replace:
-        if is_pruned and args.eval_inference_time:
-            # True pruning mode: benchmark with padding 128 (already applied above)
-            print(f"\n[Benchmark] Testing True Pruning mode (with padding 128)...")
-            # Use bench_forward with real data from eval_dataloader
-            if args.modality == "image":
-                throughput, latency_ms = bench_forward_image(model, eval_dataloader=eval_dataloader, iters=200, warmup=20, device=device)
-                print(f"  Throughput: {throughput:.2f} samples/sec (using real data)")
-                print(f"  Latency:    {latency_ms:.2f} ms/batch")
-            else:  # text
-                throughput, latency_ms = bench_forward(model, eval_dataloader=eval_dataloader, iters=200, warmup=20, device=device)
-                print(f"  Throughput: {throughput:.2f} samples/sec (using real data)")
-                print(f"  Latency:    {latency_ms:.2f} ms/batch")
-        else:
-            # Baseline mode: just run single benchmark
-            print(f"\n[Benchmark] Testing Baseline mode...")
-            if args.modality == "image":
-                # Use bench_forward_image with real data for baseline mode
-                throughput, latency_ms = bench_forward_image(model, eval_dataloader=eval_dataloader, iters=200, warmup=20, device=device)
-                print(f"  Throughput: {throughput:.2f} samples/sec (using real data)")
-                print(f"  Latency:    {latency_ms:.2f} ms/batch")
-            else:  # text
-                throughput, latency_ms = bench_forward(model, eval_dataloader=eval_dataloader, iters=200, warmup=20, device=device)
-                print(f"  Throughput: {throughput:.2f} samples/sec (using real data)")
-                print(f"  Latency:    {latency_ms:.2f} ms/batch")
+    if eval_dataloader is not None:
+        mode_desc = "True Pruning mode (with padding 128)" if is_stt_mode else "Baseline mode"
+        print(f"\n[Benchmark] Testing {mode_desc}...")
+        if args.modality == "image":
+            throughput, latency_ms = bench_forward_image(model, eval_dataloader=eval_dataloader, iters=200, warmup=20, device=device)
+        else:  # text
+            throughput, latency_ms = bench_forward(model, eval_dataloader=eval_dataloader, iters=200, warmup=20, device=device)
+        print(f"  Throughput: {throughput:.2f} samples/sec (using real data)")
+        print(f"  Latency:    {latency_ms:.2f} ms/batch")
+    else:
+        print(f"\n[Benchmark] Skipping benchmark (no test data available)")
 
-    # Final evaluation (padding already applied above if needed)
-    # Final evaluation
     final_accuracy, final_loss, final_throughput, final_stats = evaluate_classification(
         model,
         eval_dataloader,
@@ -1285,10 +1155,6 @@ def main():
         "lora_r": args.lora_r if "lora" in args.mode else None,
         "lora_alpha": args.lora_alpha if "lora" in args.mode else None,
     }
-
-    # import json
-    # with open(os.path.join(run_dir, "results.json"), "w") as f:
-    #     json.dump(results, f, indent=2)
 
     print(f"Training completed. Results saved to {run_dir}")
     if args.use_wandb:

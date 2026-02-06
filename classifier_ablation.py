@@ -29,7 +29,9 @@ from util.torch_flops import (
     flops_train_step,    
     extract_inputs_from_batch,
     LLM_MAXLEN,
-    TEXT_MAXLEN
+    TEXT_MAXLEN,
+    infer_vit_seq_len,
+    peek_vit_dataloader
 )
 import numpy as np
 import seaborn as sns
@@ -56,100 +58,6 @@ from torch.utils.data import DataLoader
 from torch import nn
 MAG_TP_K_MAP = None
 MAG_TP_LAYER_NAME_MAP = None
-
-
-def infer_vit_seq_len(model: Optional[nn.Module] = None,
-                      H: Optional[int] = None,
-                      W: Optional[int] = None,
-                      add_cls: bool = True,
-                      default_image_size: int = 224,
-                      default_patch: int = 16) -> int:
-
-    img_size = None
-    patch = None
-    if model is not None and hasattr(model, "config"):
-        cfg = model.config
-        img_size = getattr(cfg, "image_size", img_size)
-        patch    = getattr(cfg, "patch_size", patch)
-        vcfg     = getattr(cfg, "vision_config", None)
-        if vcfg is not None:
-            img_size = getattr(vcfg, "image_size", img_size)
-            patch    = getattr(vcfg, "patch_size", patch)
-    if H is None or W is None:
-        s = int(img_size) if img_size is not None else int(default_image_size)
-        H = H or s
-        W = W or s
-    P = int(patch) if patch is not None else int(default_patch)
-    h = math.ceil(H / P)
-    w = math.ceil(W / P)
-    toks = h * w + (1 if add_cls else 0)
-    return int(toks)
-
-def peek_vit_dataloader(dl: DataLoader,
-                        model: Optional[nn.Module] = None,
-                        n_batches: int = 2,
-                        prefix: str = "[VIT]") -> int:
-
-    print(f"{prefix} dl.type = {type(dl)}  dataset.type = {type(getattr(dl,'dataset', None))}")
-    try:
-        print(f"{prefix} dataset.len = {len(dl.dataset)}  batch_size = {getattr(dl, 'batch_size', None)}")
-    except Exception:
-        pass
-    cf = getattr(dl, "collate_fn", None)
-    print(f"{prefix} collate_fn = {getattr(cf, '__name__', str(cf))}")
-
-    D_partial = 0
-    for i, batch in enumerate(dl):
-        if i >= n_batches:
-            break
-        print(f"{prefix} ----- batch {i} -----")
-        H = W = None
-        B = None
-
-        if isinstance(batch, dict):
-            keys = list(batch.keys())
-            print(f"{prefix} dict.keys = {keys}")
-            if "pixel_values" in batch and torch.is_tensor(batch["pixel_values"]):
-                pv = batch["pixel_values"]  # (B,C,H,W)
-                B, C, H, W = int(pv.size(0)), int(pv.size(1)), int(pv.size(2)), int(pv.size(3))
-                print(f"{prefix} pixel_values: shape={(B,C,H,W)} dtype={pv.dtype} device={pv.device}")
-            else:
-                for k, v in batch.items():
-                    if torch.is_tensor(v) and v.dim() == 4:
-                        B, C, H, W = int(v.size(0)), int(v.size(1)), int(v.size(2)), int(v.size(3))
-                        print(f"{prefix} {k}: shape={(B,C,H,W)} dtype={v.dtype} device={v.device}")
-                        break
-
-        elif isinstance(batch, (list, tuple)) and len(batch) > 0:
-            x = batch[0]
-            if torch.is_tensor(x) and x.dim() == 4:
-                B, C, H, W = int(x.size(0)), int(x.size(1)), int(x.size(2)), int(x.size(3))
-                print(f"{prefix} tensor[0]: shape={(B,C,H,W)} dtype={x.dtype} device={x.device}")
-            elif isinstance(x, (list, tuple)) and len(x) > 0:
-                try:
-                    im0 = x[0]
-                    if hasattr(im0, "size"):
-                        W, H = im0.size  # PIL (W,H)
-                        B = len(x)
-                        print(f"{prefix} PIL list: B={B} HxW={H}x{W}")
-                except Exception:
-                    print(f"{prefix} unknown list/tuple content; preview type={type(x)}")
-            else:
-                print(f"{prefix} unsupported batch content: type={type(x)}")
-
-        else:
-            print(f"{prefix} unsupported batch type: {type(batch)}")
-
-        if B is not None and H is not None and W is not None:
-            seq_len = infer_vit_seq_len(model=model, H=H, W=W, add_cls=True)
-            D_this = int(B * seq_len)
-            D_partial += D_this
-            print(f"{prefix} seq_len_per_image ≈ {seq_len}  -> batch_tokens ≈ {D_this}")
-        else:
-            print(f"{prefix} cannot infer (B,H,W); batch_tokens += 0")
-
-    print(f"{prefix} D_partial (first {n_batches} batches) ≈ {D_partial}")
-    return D_partial
 
 def main():
     parser = argparse.ArgumentParser(description="Train Classifier with Neuron Selection")

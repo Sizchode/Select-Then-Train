@@ -81,10 +81,6 @@ def main():
     parser.add_argument("--tune_attn", action="store_true", help="tune attn proj during tracking (if tracker supports)")
     parser.add_argument('--dev_mode', action='store_true',
                         help='Use a held-out dev set from training set for validation (grid search); do NOT use real test set')
-    parser.add_argument('--eval_inference_time', action='store_true',
-                        help='Use inference_time=True for evaluation (true pruning, no scatter). Default: False (scatter mode)')
-    parser.add_argument('--bench_linear_replace', action='store_true',
-                        help='Benchmark STTLinear with different padding strategies (no padding, pad to 128, pad to 256).')
     args = parser.parse_args()
     set_seed(args.seed)
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -652,17 +648,12 @@ def main():
     if args.use_wandb:
         wandb.log({"status": "training_finished", "evaluating": True})
 
-    # Only test stt (with eval_inference_time) and baseline modes
+    # Only test stt and baseline modes
     is_stt_mode = args.mode == "stt"
     
-    # Auto-enable eval_inference_time for stt mode
     if is_stt_mode:
-        args.eval_inference_time = True
-    
-    if is_stt_mode and args.eval_inference_time:
         # STT mode with True Pruning (inference_time=True)
-        print("\n[Evaluation] Switching to inference_time mode (true pruning, no scatter)...")
-        
+        print("\n[Evaluation] inference throughput for pruning...")
         clear_cuda_cache_and_states(
             optimizer=optimizer,
             trainer=trainer,
@@ -670,7 +661,6 @@ def main():
             device=device,
             verbose=True
         )
-        
         modified_count = 0
         for name, module in model.named_modules():
             if isinstance(module, STTLinear):
@@ -695,7 +685,7 @@ def main():
         
         eval_mode_str = "True Pruning (inference_time=True)"
     else:
-        # Baseline mode (or stt without eval_inference_time, treated as baseline)
+        # Baseline mode
         print("\n[Evaluation] Using baseline mode (no pruning)")
         eval_mode_str = "Baseline (no pruning)"
 
@@ -739,22 +729,15 @@ def main():
     ) if 'test_dataset' in locals() else None
     
     # Performance benchmark
-    if args.bench_linear_replace:
-        if is_stt_mode and args.eval_inference_time:
-            print(f"\n[Benchmark] Testing True Pruning mode (with padding 128)...")
-            throughput, latency_ms = bench_forward(model, eval_dataloader=eval_dataloader_bench, iters=200, warmup=20, device=device)
-            print(f"  Throughput: {throughput:.2f} samples/sec (using real data)")
-            print(f"  Latency:    {latency_ms:.2f} ms/batch")
-        else:
-            print(f"\n[Benchmark] Testing Baseline mode...")
-            throughput, latency_ms = bench_forward(model, eval_dataloader=eval_dataloader_bench, iters=200, warmup=20, device=device)
-            print(f"  Throughput: {throughput:.2f} samples/sec (using real data)")
-            print(f"  Latency:    {latency_ms:.2f} ms/batch")
-    else:
-        print(f"\n[Micro-Benchmark] Measuring pure forward pass speed ({eval_mode_str})...")
-        throughput, latency_ms = bench_forward(model, seq_len=512, batch=4, iters=200, warmup=20, device=device)
-        print(f"  Throughput: {throughput:.2f} samples/sec")
+    # Only test if real data is available, otherwise skip
+    if eval_dataloader_bench is not None:
+        mode_desc = "True Pruning mode (with padding 128)" if is_stt_mode else "Baseline mode"
+        print(f"\n[Benchmark] Testing {mode_desc}...")
+        throughput, latency_ms = bench_forward(model, eval_dataloader=eval_dataloader_bench, iters=200, warmup=20, device=device)
+        print(f"  Throughput: {throughput:.2f} samples/sec (using real data)")
         print(f"  Latency:    {latency_ms:.2f} ms/batch")
+    else:
+        print(f"\n[Benchmark] Skipping benchmark (no test data available)")
 
     accuracy, predictions = trainer.test(
         fname=os.path.join(args.output_dir, run_name),
