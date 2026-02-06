@@ -359,3 +359,139 @@ def peek_vit_dataloader(dl,
 
     print(f"{prefix} D_partial (first {n_batches} batches) ≈ {D_partial}")
     return D_partial
+
+
+def _pick_tensor(x):
+    """
+    Helper function to extract a tensor from model output (dict, object, list, or tensor).
+    Used by FLOPs calculation criteria.
+    """
+    if isinstance(x, dict):
+        for k in ("logits", "logit", "scores", "last_hidden_state", "pooler_output"):
+            v = x.get(k, None)
+            if torch.is_tensor(v):
+                return v, k
+        for k, v in x.items():
+            if torch.is_tensor(v):
+                return v, k
+    if hasattr(x, "logits") and torch.is_tensor(getattr(x, "logits")):
+        return getattr(x, "logits"), "logits(attr)"
+    if hasattr(x, "__dict__"):
+        for k in ("scores", "last_hidden_state", "pooler_output"):
+            if hasattr(x, k) and torch.is_tensor(getattr(x, k)):
+                return getattr(x, k), f"{k}(attr)"
+    if isinstance(x, (list, tuple)):
+        for i, e in enumerate(x):
+            if torch.is_tensor(e):
+                return e, f"seq[{i}]"
+    if torch.is_tensor(x):
+        return x, "tensor"
+    return None, "none"
+
+
+def prepare_flops_inputs_and_criterion(model, train_dataloader, modality, device, dtype=torch.float32, flops_debug=True):
+    """
+    Prepare inputs and criterion for FLOPs calculation for classification models.
+    
+    Args:
+        model: The model to prepare inputs for
+        train_dataloader: Training dataloader to extract sample batch
+        modality: "image" or "text"
+        device: Device to place tensors on
+        dtype: Data type for tensors (default: torch.float32)
+        flops_debug: Whether to print debug information
+    
+    Returns:
+        Tuple of (_inp1_fwd, _inp1_train, _criterion, _y1, flops_dbg_once)
+        - _inp1_fwd: Input dict for forward pass FLOPs calculation
+        - _inp1_train: Input dict for training step FLOPs calculation
+        - _criterion: Criterion function for loss calculation
+        - _y1: Optional label tensor (for image modality)
+        - flops_dbg_once: Debug state dict
+    """
+    import torch.nn.functional as F
+    
+    flops_dbg_once = {"done": False}
+    _y1 = None
+    
+    if modality == "image":
+        _batch0 = next(iter(train_dataloader))
+        if isinstance(_batch0, (list, tuple)) and len(_batch0) >= 1 and torch.is_tensor(_batch0[0]):
+            _x1 = _batch0[0][:1].to(device).to(dtype)
+            _y1 = _batch0[1][:1].to(device) if (len(_batch0) > 1 and torch.is_tensor(_batch0[1]) and _batch0[1].dim() == 1) else None
+        elif isinstance(_batch0, dict) and "pixel_values" in _batch0 and torch.is_tensor(_batch0["pixel_values"]):
+            _x1 = _batch0["pixel_values"][:1].to(device).to(dtype)
+            _y1 = _batch0["labels"][:1].to(device) if ("labels" in _batch0 and torch.is_tensor(_batch0["labels"])) else None
+        else:
+            raise RuntimeError("[FLOPs] Unsupported image batch structure.")
+        
+        try:
+            _ = model(pixel_values=_x1)
+            _inp1_fwd = {"pixel_values": _x1}
+            _inp1_train = {"pixel_values": _x1}
+            if flops_debug and not flops_dbg_once["done"]:
+                print(f"[FLOPs][debug] call path = keyword; x1.shape={tuple(_x1.shape)}, dtype={_x1.dtype}, device={_x1.device}")
+        except TypeError:
+            _inp1_fwd = _x1
+            _inp1_train = _x1
+            if flops_debug and not flops_dbg_once["done"]:
+                print(f"[FLOPs][debug] call path = positional; x1.shape={tuple(_x1.shape)}, dtype={_x1.dtype}, device={_x1.device}")
+        
+        def _vit_criterion(out, _inputs_unused):
+            t, tag = _pick_tensor(out)
+            if t is None:
+                raise RuntimeError(f"[FLOPs] cannot extract tensor from model output; type(out)={type(out)}")
+            if flops_debug and not flops_dbg_once["done"]:
+                lab = (_y1 is not None and torch.is_tensor(_y1))
+                print(f"[FLOPs][debug] out.type={type(out).__name__}; pick='{tag}', shape={tuple(t.shape)}, dtype={t.dtype}; labels={lab}")
+                flops_dbg_once["done"] = True
+            
+            if (_y1 is not None and torch.is_tensor(_y1)
+                and t.dim() >= 2 and t.size(0) == _y1.size(0)):
+                return F.cross_entropy(t, _y1)
+            return t.float().mean()
+        
+        _criterion = _vit_criterion
+        
+    elif modality == "text":
+        L = TEXT_MAXLEN
+        _inp1_fwd = {
+            "input_ids": torch.ones(1, L, dtype=torch.long, device=str(device)),
+            "attention_mask": torch.ones(1, L, dtype=torch.long, device=str(device)),
+        }
+        _inp1_train = dict(_inp1_fwd)
+        _inp1_extracted = _inp1_fwd
+        _lab = _inp1_extracted.get("labels", None)
+        if _lab is None:
+            _norm_lab = torch.zeros(1, dtype=torch.long, device=str(device))
+        elif torch.is_tensor(_lab):
+            _lab = _lab.to(device)
+            if _lab.dim() == 0:
+                _norm_lab = _lab.view(1).to(torch.long)
+            elif _lab.dim() == 1:
+                _norm_lab = _lab[:1].to(torch.long)
+            else:
+                _norm_lab = _lab[:1, 0].to(torch.long)
+        else:
+            _norm_lab = torch.zeros(1, dtype=torch.long, device=str(device))
+            _inp1_train = dict(_inp1_fwd)
+            _inp1_train["loss_labels"] = _norm_lab
+        
+        if flops_debug:
+            print(f"[DEBUG] Forward input keys (no labels): {list(_inp1_fwd.keys())}")
+            print(f"[DEBUG] Training input keys (with labels): {list(_inp1_train.keys())}")
+        
+        def _bert_criterion(out, inputs_dict):
+            t, tag = _pick_tensor(out)
+            if t is None:
+                raise RuntimeError(f"[FLOPs] cannot extract tensor from model output; type(out)={type(out)}")
+            if flops_debug and not flops_dbg_once["done"]:
+                print(f"[FLOPs][debug][BERT] out.pick='{tag}', shape={tuple(t.shape)} (TEXT_MAXLEN={TEXT_MAXLEN})")
+                flops_dbg_once["done"] = True
+            return t.float().mean()
+        
+        _criterion = _bert_criterion
+    else:
+        raise ValueError(f"Unsupported modality: {modality}")
+    
+    return _inp1_fwd, _inp1_train, _criterion, _y1, flops_dbg_once

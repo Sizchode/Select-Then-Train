@@ -31,7 +31,8 @@ from util.torch_flops import (
     LLM_MAXLEN,
     TEXT_MAXLEN,
     infer_vit_seq_len,
-    peek_vit_dataloader
+    peek_vit_dataloader,
+    prepare_flops_inputs_and_criterion
 )
 import numpy as np
 import seaborn as sns
@@ -241,149 +242,29 @@ def main():
     if args.modality == "image":
         _ = peek_vit_dataloader(train_dataloader, model=model, n_batches=2, prefix="[VIT-TRAIN]")
         _ = peek_vit_dataloader(eval_dataloader, model=model, n_batches=2, prefix="[VIT-TEST]")
-        F_fwd_base      = None  
-        F_fwd_variant   = None  
-        F_train_variant = None  
-        selection_flops = 0     
-
-        _batch0 = next(iter(train_dataloader))
-        if isinstance(_batch0, (list, tuple)) and len(_batch0) >= 1 and torch.is_tensor(_batch0[0]):
-            _x1 = _batch0[0][:1].to(device).to(torch.bfloat16)  # (1,3,H,W)
-            _y1 = _batch0[1][:1].to(device) if (len(_batch0) > 1 and torch.is_tensor(_batch0[1]) and _batch0[1].dim() == 1) else None
-        elif isinstance(_batch0, dict) and "pixel_values" in _batch0 and torch.is_tensor(_batch0["pixel_values"]):
-            _x1 = _batch0["pixel_values"][:1].to(device).to(torch.bfloat16)
-            _y1 = _batch0["labels"][:1].to(device) if ("labels" in _batch0 and torch.is_tensor(_batch0["labels"])) else None
-        else:
-            raise RuntimeError("[FLOPs] Unsupported image batch structure.")
-        FLOPS_DEBUG = True
-        _flops_dbg_once = {"done": False}
-
-        try:
-            _ = model(pixel_values=_x1)  
-            _inp1_fwd   = {"pixel_values": _x1}  
-            _inp1_train = {"pixel_values": _x1}
-            if FLOPS_DEBUG and not _flops_dbg_once["done"]:
-                print(f"[FLOPs][debug] call path = keyword; x1.shape={tuple(_x1.shape)}, dtype={_x1.dtype}, device={_x1.device}")
-        except TypeError:
-            _inp1_fwd   = _x1
-            _inp1_train = _x1
-            if FLOPS_DEBUG and not _flops_dbg_once["done"]:
-                print(f"[FLOPs][debug] call path = positional; x1.shape={tuple(_x1.shape)}, dtype={_x1.dtype}, device={_x1.device}")
-
-        import torch.nn.functional as F
-        def _vit_criterion(out, _inputs_unused):
-            def _pick_tensor(x):
-                if isinstance(x, dict):
-                    for k in ("logits", "logit", "scores", "last_hidden_state", "pooler_output"):
-                        v = x.get(k, None)
-                        if torch.is_tensor(v):
-                            return v, k
-                    for k, v in x.items():
-                        if torch.is_tensor(v):
-                            return v, k
-                if hasattr(x, "logits") and torch.is_tensor(getattr(x, "logits")):
-                    return getattr(x, "logits"), "logits(attr)"
-                if hasattr(x, "__dict__"):
-                    for k in ("scores", "last_hidden_state", "pooler_output"):
-                        if hasattr(x, k) and torch.is_tensor(getattr(x, k)):
-                            return getattr(x, k), f"{k}(attr)"
-                if isinstance(x, (list, tuple)):
-                    for i, e in enumerate(x):
-                        if torch.is_tensor(e):
-                            return e, f"seq[{i}]"
-                if torch.is_tensor(x):
-                    return x, "tensor"
-                return None, "none"
-
-            t, tag = _pick_tensor(out)
-            if t is None:
-                raise RuntimeError(f"[FLOPs] cannot extract tensor from model output; type(out)={type(out)}")
-            if FLOPS_DEBUG and not _flops_dbg_once["done"]:
-                lab = ( _y1 is not None and torch.is_tensor(_y1) )
-                print(f"[FLOPs][debug] out.type={type(out).__name__}; pick='{tag}', shape={tuple(t.shape)}, dtype={t.dtype}; labels={lab}")
-                _criterion = _vit_criterion
-                _flops_dbg_once["done"] = True
-
-            if (_y1 is not None and torch.is_tensor(_y1)
-                and t.dim() >= 2 and t.size(0) == _y1.size(0)):
-                return F.cross_entropy(t, _y1)
-            return t.float().mean()
-            # ---- Baseline（NS/LoRA/NS-LoRA）----
-        _criterion = _vit_criterion
-        F_fwd_base   = flops_forward(model, _inp1_fwd, device=str(device))
+    
+    # Prepare FLOPs calculation inputs and criterion
+    F_fwd_base = None
+    F_fwd_variant = None
+    F_train_variant = None
+    selection_flops = 0
+    
+    _inp1_fwd, _inp1_train, _criterion, _y1, _flops_dbg_once = prepare_flops_inputs_and_criterion(
+        model=model,
+        train_dataloader=train_dataloader,
+        modality=args.modality,
+        device=device,
+        dtype=torch.bfloat16,
+        flops_debug=True
+    )
+    
+    if args.modality == "image":
+        F_fwd_base = flops_forward(model, _inp1_fwd, device=str(device))
         print(f"[FLOPs] per-image forward (baseline): {F_fwd_base/1e9:.3f} GFLOPs")
-
     elif args.modality == "text":
-        # ===== [FLOPs] Prepare single-sample & baseline counts (BERT/SeqCls) =====
-        F_fwd_base      = None   # baseline per-example forward FLOPs (L=TEXT_MAXLEN)
-        F_fwd_variant   = None   # variant per-example forward FLOPs
-        F_train_variant = None   # variant per-example train FLOPs
-        selection_flops = 0
-        # Assume fixed text length TEXT_MAXLEN(=512): build 1×L dummy inputs (no labels)
-        L = TEXT_MAXLEN
-        _inp1_fwd = {
-            "input_ids": torch.ones(1, L, dtype=torch.long, device=str(device)),
-           "attention_mask": torch.ones(1, L, dtype=torch.long, device=str(device)),
-        }
-        _inp1_train = dict(_inp1_fwd)  # training FLOPs uses mean() loss without labels
-        _inp1_extracted = _inp1_fwd
-        _lab = _inp1_extracted.get("labels", None)
-        if _lab is None:
-            _norm_lab = torch.zeros(1, dtype=torch.long, device=str(device))
-        elif torch.is_tensor(_lab):
-            _lab = _lab.to(device)
-            if _lab.dim() == 0:
-               norm_lab = _lab.view(1).to(torch.long)
-            elif _lab.dim() == 1:
-               _norm_lab = _lab[:1].to(torch.long)
-            else:
-              norm_lab = _lab[:1, 0].to(torch.long)
-        else:
-            _norm_lab = torch.zeros(1, dtype=torch.long, device=str(device))
-            _inp1_train = dict(_inp1_fwd); _inp1_train["loss_labels"] = _norm_lab
-
-        
-        print(f"[DEBUG] Forward input keys (no labels): {list(_inp1_fwd.keys())}")
-        print(f"[DEBUG] Training input keys (with labels): {list(_inp1_train.keys())}")
-
-        # Simple criterion mirroring the ViT path: use CE when shapes match, else mean()
-        import torch.nn.functional as F
-        FLOPS_DEBUG = True
-        _flops_dbg_once = {"done": False}
-        def _bert_criterion(out, inputs_dict):
-            def _pick_tensor(x):
-                if isinstance(x, dict):
-                    for k in ("logits","logit","scores","last_hidden_state","pooler_output"):
-                        v = x.get(k, None)
-                        if torch.is_tensor(v): return v, k
-                    for k, v in x.items():
-                        if torch.is_tensor(v): return v, k
-                if hasattr(x, "logits") and torch.is_tensor(getattr(x, "logits")):
-                    return getattr(x, "logits"), "logits(attr)"
-                if hasattr(x, "__dict__"):
-                    for k in ("scores","last_hidden_state","pooler_output"):
-                        if hasattr(x, k) and torch.is_tensor(getattr(x, k)):
-                            return getattr(x, k), f"{k}(attr)"
-                if isinstance(x, (list, tuple)):
-                    for i, e in enumerate(x):
-                        if torch.is_tensor(e): return e, f"seq[{i}]"
-                if torch.is_tensor(x): return x, "tensor"
-                return None, "none"
-            
-            t, tag = _pick_tensor(out)
-            if t is None:
-                raise RuntimeError(f"[FLOPs] cannot extract tensor from model output; type(out)={type(out)}")
-            if FLOPS_DEBUG and not _flops_dbg_once["done"]:
-                print(f"[FLOPs][debug][BERT] out.pick='{tag}', shape={tuple(t.shape)} (TEXT_MAXLEN={TEXT_MAXLEN})")
-                _flops_dbg_once["done"] = True
-                y = inputs_dict.get("loss_labels", None)
-                return t.float().mean()
-
-        # Baseline forward FLOPs (used for selection accounting in NS/NS-LoRA)
         print(f"[DEBUG] About to call flops_forward with inputs: {list(_inp1_fwd.keys())}")
         F_fwd_base = flops_forward(model, _inp1_fwd, device=str(device))
         print(f"[FLOPs][BERT] per-example forward baseline (L={TEXT_MAXLEN}): {F_fwd_base/1e9:.3f} GFLOPs")
-        _criterion = _bert_criterion
     # Calculate original parameter count
     orig_param_count = sum(p.numel() for p in model.parameters())
     orig_trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
