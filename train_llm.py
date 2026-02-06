@@ -139,7 +139,6 @@ def main():
     else:
         raise ValueError(f"Unsupported task: {args.task}. Supported tasks: clutrr, boolq, arc-e, arc-c")
     datasets = data_loader.load_data(train_size=args.train_size)
-
     if args.dev_mode:
         if args.task in ['arc-e', 'arc-c']:
             train_dataset = datasets['train']
@@ -165,12 +164,12 @@ def main():
     elif args.task in ['arc-e', 'arc-c']:
         response_template_with_context = "Answer:\n"
     else:
-        response_template_with_context = "\n"  # Default fallback
+        response_template_with_context = "\n"  
 
     if args.apply_chat_template:
         response_template_with_context = \
-            tokenizer.apply_chat_template([], tokenize=False, add_generation_prompt=True).split('\n')[-1]  # Heuristic
-        if not response_template_with_context: response_template_with_context = " [/INST]"  # Fallback
+            tokenizer.apply_chat_template([], tokenize=False, add_generation_prompt=True).split('\n')[-1]  
+        if not response_template_with_context: response_template_with_context = " [/INST]"  
 
     offset = 1  
     response_template_ids = tokenizer.encode(response_template_with_context, add_special_tokens=False)[offset:]
@@ -217,25 +216,22 @@ def main():
         layer_map = tracker.get_layer_name_map()
         active_indices_dict = None
         active_indices_dict = tracker.get_active_indices(dataloader=active_dataloader)
-        composition_stats = tracker.compute_dual_metric_composition(delta=args.active_threshold)
-        tracker.visualize_layer_composition(
-            composition_stats,
-            model_name=f"{args.model_name}_topk{args.topk_ratio}",
-            dataset_name=args.task
-        )
-
+        # composition_stats = tracker.compute_dual_metric_composition(delta=args.active_threshold)
+        # tracker.visualize_layer_composition(
+        #     composition_stats,
+        #     model_name=f"{args.model_name}_topk{args.topk_ratio}",
+        #     dataset_name=args.task
+        # )
         if active_indices_dict is None:
             active_indices_dict = {}
         print(f"Tracking complete. Found active indices for "
                 f"{len(active_indices_dict) - 1 if active_indices_dict and '_attn_proj_layers' in active_indices_dict else (len(active_indices_dict) if active_indices_dict else 0)} layers.")
-
         if len(active_indices_dict) == 0:
             print("No active neurons found — skipping pruning.")
             model_to_prune = model
         else:
             print("Loading fresh model instance for pruning...")
             model_to_prune = model
-
 
         # 4. STTTransformer Initialization
         print("Initializing STTTransformer...")
@@ -246,7 +242,7 @@ def main():
             verbose=True,
             tune_pruned=False,
             device=device,
-            inference_time=False  # Training: use scatter mode
+            inference_time=False  
         )
         print("Performing model transformation (pruning)...")
         pruned_model = transformer.transform()
@@ -254,21 +250,17 @@ def main():
         model = pruned_model
         print("Model variable now points to the pruned model.")
 
-        # For stt_lora mode, apply STTLoraLinear to STTLinear layers
         if args.mode == "stt_lora":
             print("--- Applying STTLoraLinear to STTLinear layers ---")
-            # Convert STTLinear layers to STTLoraLinear
             for name, module in model.named_modules():
                 if isinstance(module, STTLinear):
                     parent_name = name.rsplit('.', 1)[0] if '.' in name else ''
                     attr_name = name.split('.')[-1]
-
                     # Get parent module
                     parent = model
                     if parent_name:
                         for part in parent_name.split('.'):
                             parent = getattr(parent, part)
-                    # Replace STTLinear with STTLoraLinear
                     ns_lora = STTLoraLinear(
                         stt_linear=module,
                         r=args.lora_r,
@@ -276,17 +268,16 @@ def main():
                         lora_dropout=args.lora_dropout,
                         merge_weights=False
                     )
-                    # Set the attribute on the parent module
                     setattr(parent, attr_name, ns_lora)
 
             print("STTLoraLinear transformation complete.")
-            _bp = next(p for p in model.parameters() if p.is_floating_point())  # [ADDED]
-            for m in model.modules():  # [ADDED]
-                if isinstance(m, STTLoraLinear):  # [ADDED]
-                    m.lora_A.to(device=_bp.device, dtype=_bp.dtype)  # [ADDED]
-                    m.lora_B.to(device=_bp.device, dtype=_bp.dtype)  # [ADDED]
-                    m.scaling = torch.as_tensor(m.scaling, device=_bp.device, dtype=_bp.dtype)  # [ADDED]
-            print("[NSLoRA] base:", _bp.dtype, "adapters:", {m.lora_A.weight.dtype for m in model.modules() if isinstance(m, STTLoraLinear)})  # [ADDED]
+            _bp = next(p for p in model.parameters() if p.is_floating_point())  
+            for m in model.modules():  
+                if isinstance(m, STTLoraLinear):  
+                    m.lora_A.to(device=_bp.device, dtype=_bp.dtype)  
+                    m.lora_B.to(device=_bp.device, dtype=_bp.dtype) 
+                    m.scaling = torch.as_tensor(m.scaling, device=_bp.device, dtype=_bp.dtype)  
+            print("[NSLoRA] base:", _bp.dtype, "adapters:", {m.lora_A.weight.dtype for m in model.modules() if isinstance(m, STTLoraLinear)})  
     elif args.mode == "magnitude_pruning":
         sampled_subset = data_loader.get_active_set(args.active_sample_ratio)
         sampled_subset = sampled_subset['text']
@@ -302,7 +293,7 @@ def main():
         # 2. NeuronTracker Initialization
         print("Initializing NeuronTracker...")
         tracker = NeuronTracker(
-            model=model,  # Assuming 'model' is the loaded original model
+            model=model, 
             tokenizer=tokenizer,
             threshold=args.active_threshold,
             topk_ratio=args.topk_ratio, 
@@ -340,13 +331,11 @@ def main():
                 k = k_map.get(lname, 0)
                 if k <= 0:
                     continue
-                # weight: [out_features, in_features] → L1 per output unit
                 score = m.weight.detach().abs().sum(dim=1)
                 keep = min(k, score.numel())
                 topk_idx = torch.topk(score, keep, largest=True).indices
                 mag_indices[lname] = topk_idx
 
-        # 3) structural pruning into a STT subnetwork
         nst = STTTransformer(
             model=model,
             active_neurons=mag_indices,
@@ -354,7 +343,7 @@ def main():
             tune_pruned=False,
             device=device,
             verbose=True,
-            inference_time=False  # Training: use scatter mode
+            inference_time=False  
         )
         model = nst.transform().to(device)
 
@@ -465,7 +454,7 @@ def main():
             tune_pruned=False,
             device=device,
             verbose=True,
-            inference_time=False  # Training: use scatter mode
+            inference_time=False  
         )
         model = nst.transform().to(device)
 
@@ -494,10 +483,8 @@ def main():
         print(f"--- Running in {args.mode} mode (full finetuning) ---")
         model = model.to(device)
         print(model.dtype)   
-
     final_param_count = sum(p.numel() for p in model.parameters())
     final_trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-
     if args.mode in ("stt"):
         trainable_params_list = []
         for name, param in model.named_parameters():
@@ -519,12 +506,10 @@ def main():
             )
             model = get_peft_model(model, head_cfg)        
 
-        # For STTLoraLinear, we only train the LoRA parameters
         trainable_params_list = []
         for name, param in model.named_parameters():
             param.requires_grad = False
 
-        # Enable training for STTLoraLinear parameters and lm_head
         for name, module in model.named_modules():
             if isinstance(module, STTLoraLinear) or 'lm_head' in name:
                 for param_name, param in module.named_parameters():
@@ -652,7 +637,6 @@ def main():
     is_stt_mode = args.mode == "stt"
     
     if is_stt_mode:
-        # STT mode with True Pruning (inference_time=True)
         print("\n[Evaluation] inference throughput for pruning...")
         clear_cuda_cache_and_states(
             optimizer=optimizer,
@@ -675,7 +659,6 @@ def main():
         print(f"[Evaluation] Model switched to inference_time mode (gate/up only, down_proj remains False)")
         print(f"[Evaluation] Modified {modified_count} gate/up_proj modules to inference_time=True")
         
-        # Apply padding for True Pruning mode
         print(f"\n[Padding] Applying padding 128 for True Pruning mode...")
         pad_all_nslinear_modules(model, pad_to=128)
         if device == "cuda":
@@ -683,11 +666,8 @@ def main():
             torch.cuda.synchronize()
         print("[Padding] Padding applied successfully.")
         
-        eval_mode_str = "True Pruning (inference_time=True)"
     else:
-        # Baseline mode
         print("\n[Evaluation] Using baseline mode (no pruning)")
-        eval_mode_str = "Baseline (no pruning)"
 
     def tokenize_collate_fn(batch):
         """Collate function that tokenizes text field from raw dataset"""
@@ -728,8 +708,6 @@ def main():
         collate_fn=tokenize_collate_fn
     ) if 'test_dataset' in locals() else None
     
-    # Performance benchmark
-    # Only test if real data is available, otherwise skip
     if eval_dataloader_bench is not None:
         mode_desc = "True Pruning mode (with padding 128)" if is_stt_mode else "Baseline mode"
         print(f"\n[Benchmark] Testing {mode_desc}...")
@@ -738,7 +716,6 @@ def main():
         print(f"  Latency:    {latency_ms:.2f} ms/batch")
     else:
         print(f"\n[Benchmark] Skipping benchmark (no test data available)")
-
     accuracy, predictions = trainer.test(
         fname=os.path.join(args.output_dir, run_name),
         task=args.task,
@@ -754,11 +731,9 @@ def main():
         'args': vars(args)
     }
     torch.save(unrestored_checkpoint, os.path.join(args.output_dir, run_name + "_unrestored.pth"))
-
     eval_dataloader = DataLoader(
             test_dataset, batch_size=args.eval_batch, shuffle=False
         )
-
     inf_unmerged = estimate_flops_infer(
         model=model,
         data=eval_dataloader,   
@@ -766,7 +741,6 @@ def main():
         tokenizer=tokenizer,   
         exclude_embeddings=True
     )
-
     # ---- Eval FLOPs ----
     total_eval_flops = inf_unmerged["flops"]
     N_eval = max(inf_unmerged["N"], 1)
@@ -786,21 +760,18 @@ def main():
             "tokens/eval_L": 2048,
             "size/eval_N": inf_unmerged["N"],
         })
-
     if args.use_wandb:
         wandb.log({
             "flops/infer_eval_unmerged_2ND": inf_unmerged["flops"],
             "tokens/eval_D": inf_unmerged["D"],
             "params/nonembed_postprune": inf_unmerged["N"],
         })
-
     print("\n[Evaluation Metrics]")
     print(f"  Accuracy: {accuracy:.4f}")
     print(f"  Num predictions: {len(predictions)}")
     print("\n[Evaluation Metrics]")
     print(f"  Accuracy: {accuracy:.4f}")
-    print(f"  Num predictions: {len(predictions)}")
-    
+    print(f"  Num predictions: {len(predictions)}") 
     if args.use_wandb:
         wandb.log({
             "eval/accuracy": accuracy,
@@ -808,6 +779,5 @@ def main():
         })
     if args.use_wandb:
         wandb.finish()
-
 if __name__ == '__main__':
     main()

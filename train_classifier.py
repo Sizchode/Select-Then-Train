@@ -2,7 +2,6 @@ import argparse
 import os
 from datetime import datetime
 import time
-
 import torch
 import wandb
 from torch.optim import AdamW
@@ -28,10 +27,7 @@ from stt.dataset import get_dataloader
 from util.torch_flops import (
     flops_forward,          
     flops_train_step,    
-    extract_inputs_from_batch,
-    LLM_MAXLEN,
     TEXT_MAXLEN,
-    infer_vit_seq_len,
     peek_vit_dataloader,
     prepare_flops_inputs_and_criterion
 )
@@ -50,17 +46,12 @@ from util.utils import (
     VisionEncoderWithClassifier,
     clear_cuda_cache_and_states,
     pad_all_nslinear_modules,
-    benchmark_nslinear_padding,
     bench_forward,
     bench_forward_image
 )
-from typing import Any, Optional
-import math
 import torch
 from torch.utils.data import DataLoader
 from torch import nn
-MAG_TP_K_MAP = None
-MAG_TP_LAYER_NAME_MAP = None
 
 def main():
     parser = argparse.ArgumentParser(description="Train Classifier with Neuron Selection")
@@ -267,7 +258,7 @@ def main():
         _ = peek_vit_dataloader(train_dataloader, model=model, n_batches=2, prefix="[VIT-TRAIN]")
         _ = peek_vit_dataloader(eval_dataloader, model=model, n_batches=2, prefix="[VIT-TEST]")
     
-    # Prepare FLOPs calculation inputs and criterion
+    # Prepare FLOPs calculation
     F_fwd_base = None
     F_fwd_variant = None
     F_train_variant = None
@@ -349,21 +340,17 @@ def main():
         active_neurons = tracker.get_active_indices(dataloader=active_dataloader)
         layer_name_map = tracker.get_layer_name_map()
         # print(f"Active neurons selected: {len(active_neurons)}")
-        model_clean = args.model_name.replace('/', '_').replace('-', '_')
-        dataset_clean = args.dataset.replace('/', '_').replace('-', '_')
         
-        print("\n--- Generating dual metric composition visualizations ---")
-        composition_stats = tracker.compute_dual_metric_composition(delta=args.threshold)
-
-        # Extract model and dataset names for clean filenames
-        model_clean = args.model_name.replace('/', '_').replace('-', '_')
-        dataset_clean = args.dataset.replace('/', '_').replace('-', '_')
-
-        tracker.visualize_layer_composition(
-            composition_stats, 
-            model_name=f"{model_clean}_topk{args.topk_ratio}", 
-            dataset_name=dataset_clean
-        )
+        # Visualization code (not core functionality, commented out)
+        # model_clean = args.model_name.replace('/', '_').replace('-', '_')
+        # dataset_clean = args.dataset.replace('/', '_').replace('-', '_')
+        # print("\n--- Generating dual metric composition visualizations ---")
+        # composition_stats = tracker.compute_dual_metric_composition(delta=args.threshold)
+        # tracker.visualize_layer_composition(
+        #     composition_stats, 
+        #     model_name=f"{model_clean}_topk{args.topk_ratio}", 
+        #     dataset_name=dataset_clean
+        # )
 
         non_empty_layers = {k: v for k, v in active_neurons.items() if v.numel() > 0}
         print(f"[tracker] non-empty layers = {len(non_empty_layers)} / {len(active_neurons)}")
@@ -377,7 +364,7 @@ def main():
             verbose=True,
             tune_pruned=False, 
             device=device,
-            inference_time=False  # Training: use scatter mode
+            inference_time=False  
         )
 
         model = nstransformer.transform().to(device).to(torch.float32)
@@ -395,7 +382,6 @@ def main():
         for name, param in model.named_parameters():
             param.requires_grad = False
 
-        # Enable output layers parameters (classifier, etc.)
         trainable = []
         for name, module in model.named_modules():
             if any(key in name for key in ["lm_head", "classifier", "score", "pooler", "out_proj"]):
@@ -415,7 +401,6 @@ def main():
         final_param_count = sum(p.numel() for p in model.parameters())
         final_trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
 
-        # Create optimizer with only trainable parameters
         optimizer = AdamW(trainable, lr=args.lr, weight_decay=args.wd)
         F_fwd_variant   = flops_forward(model, _inp1_fwd,   device=str(device))
         F_train_variant = flops_train_step(model, _inp1_train, device=str(device), criterion=_criterion)
@@ -431,7 +416,6 @@ def main():
         print(f"[FLOPs] per-image forward (Baseline): {F_fwd_variant/1e9:.3f} GFLOPs")
         print(f"[FLOPs] per-image train   (Baseline): {F_train_variant/1e9:.3f} GFLOPs")
 
-        # Recompute final counts
         final_param_count = sum(p.numel() for p in model.parameters())
         final_trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     elif args.mode == "stt_lora":
@@ -448,7 +432,6 @@ def main():
         selection_flops = int(F_fwd_base) * int(sel_samples)
         print(f"[FLOPs] selection (NS; baseline fwd  {sel_samples} images): {selection_flops/1e9:.2f} GFLOPs")
 
-        # Check if active_dataloader is empty
         if sel_samples == 0:
             raise ValueError(f"Active dataloader is empty! sample_ratio={args.sample_ratio} resulted in 0 samples. "
                            f"Please increase sample_ratio or check dataset size.")
@@ -474,8 +457,8 @@ def main():
         print("\n--- Performing neuron selection ---")
         tracker = NeuronTracker(
             model=model,
-            tokenizer=tokenizer if args.modality == "text" else None,  # Only use tokenizer for text models
-            threshold=args.threshold,                   # == active_threshold
+            tokenizer=tokenizer if args.modality == "text" else None,  
+            threshold=args.threshold,                   
             topk_ratio=args.topk_ratio,             
             use_abs_threshold=args.use_abs_threshold,
             device=device,
@@ -486,28 +469,24 @@ def main():
         active_neurons = tracker.get_active_indices(dataloader=active_dataloader)
         layer_name_map = tracker.get_layer_name_map()
 
-        # print(f"Active neurons selected: {len(active_neurons)}")
         non_empty_layers = {k: v for k, v in active_neurons.items() if v.numel() > 0}
         print(f"[tracker] non-empty layers = {len(non_empty_layers)} / {len(active_neurons)}")
         if not non_empty_layers:
             raise RuntimeError("Tracker failed.")
 
         nstransformer = STTTransformer(
-            model=model,  # Use the fresh or original model instance
-            active_neurons=active_neurons,  # Corrected: Use the dict from tracker
-            layer_name_map=layer_name_map,  # Correct: Pass the map
+            model=model,  
+            active_neurons=active_neurons,  
+            layer_name_map=layer_name_map,  
             verbose=True,
-            tune_pruned=False,  # Set True to allow fine-tuning pruned parts
-            device=device,  # Pass device if ns_transformer needs it explicitly
-            inference_time=False  # Training: use scatter mode
+            tune_pruned=False,  
+            device=device,  
+            inference_time=False  
         )
 
         model = nstransformer.transform().to(device).to(torch.float32)
-        # Only apply STTLoraLinear to pruned STTLinear layers
         print("Pruning complete")
 
-        # 3) Wrap each STTLinear in STTLoraLinear
-        from stt.stt_lora import STTLoraLinear
         for name, module in model.named_modules():
             if isinstance(module, STTLinear):
                 parent_path, attr = name.rsplit(".", 1)
@@ -526,7 +505,6 @@ def main():
                 setattr(parent, attr, ns_lora)
                 print(f"  Wrapped {name}")
 
-        # 4) Freeze everything except adapter weights and classifier head
         for param in model.parameters():
             param.requires_grad = False
         for nm, mod in model.named_modules():
@@ -569,15 +547,13 @@ def main():
         nst = STTTransformer(model, active_neurons=mag_indices,
                                         layer_name_map=layer_name_map,
                                         tune_pruned=False, device=device, verbose=True,
-                                        inference_time=False  # Training: use scatter mode
+                                        inference_time=False  
                                         )
         model = nst.transform().to(device).to(torch.float32)
         final_param_count = sum(p.numel() for p in model.parameters())
         final_trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-        # Set up optimizer (same as baseline, all trainable params)
         optimizer = AdamW([p for p in model.parameters() if p.requires_grad],
                         lr=args.lr, weight_decay=args.wd)
-        # Optional: FLOPs counting like other modes
         F_fwd_variant   = flops_forward(model, _inp1_fwd, device=str(device))
         F_train_variant = flops_train_step(model, _inp1_train, device=str(device), criterion=_criterion)
         print(f"[FLOPs] per-image forward ({args.mode}): {F_fwd_variant/1e9:.3f} GFLOPs")
@@ -657,8 +633,6 @@ def main():
         active = tracker.get_active_indices(dataloader=sel_loader)
         layer_name_map = tracker.get_layer_name_map()
         k_map = {ln: len(idx) for ln, idx in active.items()}
-        MAG_TP_K_MAP = k_map
-        MAG_TP_LAYER_NAME_MAP = layer_name_map
         optimizer = AdamW([p for p in model.parameters() if p.requires_grad],
                       lr=args.lr, weight_decay=args.wd)
         final_param_count = sum(p.numel() for p in model.parameters())
@@ -742,7 +716,7 @@ def main():
 
 
     print("\n[FLOPs] ===== Complexity Summary (FLOPs) =====")
-    print(f"Selection : {selection_flops/1e9:.2f} GFLOPs")   # NS/NS-LoRA > 0；Baseline/LoRA == 0
+    print(f"Selection : {selection_flops/1e9:.2f} GFLOPs")   
     print(f"Training  : {training_flops/1e9:.2f} GFLOPs")
     print(f"Inference : {inference_flops/1e9:.2f} GFLOPs")
     print(f"TOTAL     : {total_flops/1e9:.2f} GFLOPs")
@@ -817,10 +791,8 @@ def main():
 
             # Update weights if we've accumulated enough gradients
             if (step + 1) % args.gradient_accumulation_steps == 0 or step == len(train_dataloader) - 1:
-
                 # gradient clipping extreme
                 torch.nn.utils.clip_grad_norm_(model.parameters(), args.max_grad_norm)
-
                 optimizer.step()
                 optimizer.zero_grad()
                 if args.schedule:
@@ -959,11 +931,8 @@ def main():
             torch.cuda.empty_cache()
             torch.cuda.synchronize()
         print("[Padding] Padding applied successfully.")
-        
-        eval_mode_str = "True Pruning (inference_time=True)"
     else:
         print("\n[Evaluation] Using baseline mode (no pruning)")
-        eval_mode_str = "Baseline (no pruning)"
     
     if eval_dataloader is not None:
         mode_desc = "True Pruning mode (with padding 128)" if is_stt_mode else "Baseline mode"
@@ -1052,10 +1021,8 @@ def main():
             "final/batch/std_time_ms": final_stats['std_batch_time']*1000,
             "best/accuracy": best_accuracy
         }
-        
         wandb.log(wandb_log)
         wandb.finish()
-
     return results
 
 

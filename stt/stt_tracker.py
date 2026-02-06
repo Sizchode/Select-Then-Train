@@ -50,12 +50,6 @@ class STTTracker:
         else:
             flat = output.detach().reshape(-1, output.size(-1))
         flat = flat.to(torch.float32).cpu()
-        
-        # Use original signed values (not abs) for both magnitude and rate
-        # - Magnitude: sum of original values (signed)
-        # - Rate: count of original values > threshold (signed)
-        
-        # CHANGED: Update streaming statistics instead of appending
         st = self.stats[name]
         if st["sum_activation"] is None:
             D = flat.shape[1]
@@ -170,194 +164,194 @@ class STTTracker:
         patterns.update(["mlp_fc1", "intermediate_dense", "wi_0", "w1", "gate_proj", "fc1", "lin1", "wi"])
         return any(p in lname for p in patterns)
 
-    def compute_dual_metric_composition(self, delta=0.01):
-        """
-        Compute dual metric composition for layer-wise visualization.
-        Returns dict with layer names and their composition stats.
-        """
-        composition_stats = {}
+    # def compute_dual_metric_composition(self, delta=0.01):
+    #     """
+    #     Compute dual metric composition for layer-wise visualization.
+    #     Returns dict with layer names and their composition stats.
+    #     """
+    #     composition_stats = {}
         
-        # CHANGED: Use stats instead of neuron_activations
-        for layer, st in self.stats.items():
-            if st["count"] == 0:
-                continue
+    #     # CHANGED: Use stats instead of neuron_activations
+    #     for layer, st in self.stats.items():
+    #         if st["count"] == 0:
+    #             continue
             
-            # Compute mean and sparsity from streaming stats
-            mean = st["sum_activation"] / st["count"]
-            sparsity = st["sum_sparsity"] / st["count"]
+    #         # Compute mean and sparsity from streaming stats
+    #         mean = st["sum_activation"] / st["count"]
+    #         sparsity = st["sum_sparsity"] / st["count"]
             
-            D = mean.size(0)
-            k = max(1, int(self.topk_ratio * D))
-            k = min(k, D)
+    #         D = mean.size(0)
+    #         k = max(1, int(self.topk_ratio * D))
+    #         k = min(k, D)
             
-            top_mean_idx = torch.topk(mean, k).indices
-            top_sp_idx = torch.topk(sparsity, k).indices
+    #         top_mean_idx = torch.topk(mean, k).indices
+    #         top_sp_idx = torch.topk(sparsity, k).indices
             
-            mean_set = set(top_mean_idx.cpu().numpy())
-            sp_set = set(top_sp_idx.cpu().numpy())
+    #         mean_set = set(top_mean_idx.cpu().numpy())
+    #         sp_set = set(top_sp_idx.cpu().numpy())
             
-            both_set = mean_set & sp_set
-            mean_only_set = mean_set - both_set  
-            sp_only_set = sp_set - both_set     
-            union_size = len(mean_set | sp_set)
+    #         both_set = mean_set & sp_set
+    #         mean_only_set = mean_set - both_set  
+    #         sp_only_set = sp_set - both_set     
+    #         union_size = len(mean_set | sp_set)
             
-            composition_stats[layer] = {
-                'total_neurons': D,
-                'selected_k': k,
-                'mean_only_count': len(mean_only_set),
-                'both_count': len(both_set),
-                'rate_only_count': len(sp_only_set),
-                'mean_only_share': len(mean_only_set) / union_size if union_size > 0 else 0,
-                'both_share': len(both_set) / union_size if union_size > 0 else 0,
-                'rate_only_share': len(sp_only_set) / union_size if union_size > 0 else 0,
-                'union_size': union_size
-            }
+    #         composition_stats[layer] = {
+    #             'total_neurons': D,
+    #             'selected_k': k,
+    #             'mean_only_count': len(mean_only_set),
+    #             'both_count': len(both_set),
+    #             'rate_only_count': len(sp_only_set),
+    #             'mean_only_share': len(mean_only_set) / union_size if union_size > 0 else 0,
+    #             'both_share': len(both_set) / union_size if union_size > 0 else 0,
+    #             'rate_only_share': len(sp_only_set) / union_size if union_size > 0 else 0,
+    #             'union_size': union_size
+    #         }
             
-        return composition_stats
+    #     return composition_stats
 
-    def visualize_layer_composition(self, composition_stats, model_name="model", dataset_name="dataset",
-                                    early_only: bool=False, early_layers: int=10, save_suffix: Optional[str]=None):
-        """
-        Create difference rate curve visualization across layers.
-        Saves both SVG and PDF formats.
-        """
-        if not composition_stats:
-            print("[WARNING] No composition stats to visualize")
-            return
+    # def visualize_layer_composition(self, composition_stats, model_name="model", dataset_name="dataset",
+    #                                 early_only: bool=False, early_layers: int=10, save_suffix: Optional[str]=None):
+    #     """
+    #     Create difference rate curve visualization across layers.
+    #     Saves both SVG and PDF formats.
+    #     """
+    #     if not composition_stats:
+    #         print("[WARNING] No composition stats to visualize")
+    #         return
             
-        def extract_layer_number(layer_name):
-            import re
-            match = re.search(r'(?:layer_|_L)(\d+)', layer_name, re.IGNORECASE)
-            if match:
-                return int(match.group(1))
-            match = re.search(r'(\d+)', layer_name)
-            if match:
-                return int(match.group(1))
-            return 0  
+    #     def extract_layer_number(layer_name):
+    #         import re
+    #         match = re.search(r'(?:layer_|_L)(\d+)', layer_name, re.IGNORECASE)
+    #         if match:
+    #             return int(match.group(1))
+    #         match = re.search(r'(\d+)', layer_name)
+    #         if match:
+    #             return int(match.group(1))
+    #         return 0  
         
-        sorted_layers = sorted(composition_stats.keys(), key=extract_layer_number)
-        if early_only:
-            sorted_layers = [L for L in sorted_layers if extract_layer_number(L) < early_layers]
-            if not sorted_layers:
-                print(f"[WARNING] No layers < {early_layers} found; falling back to all layers.")
-                sorted_layers = sorted(composition_stats.keys(), key=extract_layer_number)
+    #     sorted_layers = sorted(composition_stats.keys(), key=extract_layer_number)
+    #     if early_only:
+    #         sorted_layers = [L for L in sorted_layers if extract_layer_number(L) < early_layers]
+    #         if not sorted_layers:
+    #             print(f"[WARNING] No layers < {early_layers} found; falling back to all layers.")
+    #             sorted_layers = sorted(composition_stats.keys(), key=extract_layer_number)
         
-        layer_numbers = []
-        overlap_rates = []
+    #     layer_numbers = []
+    #     overlap_rates = []
         
-        for layer in sorted_layers:
-            stats = composition_stats[layer]
-            layer_num = extract_layer_number(layer)
-            layer_numbers.append(layer_num)
-            # Overlap rate = both_count / union_size
-            overlap_rate = stats['both_count'] / stats['union_size'] if stats['union_size'] > 0 else 0
-            overlap_rates.append(overlap_rate)
+    #     for layer in sorted_layers:
+    #         stats = composition_stats[layer]
+    #         layer_num = extract_layer_number(layer)
+    #         layer_numbers.append(layer_num)
+    #         # Overlap rate = both_count / union_size
+    #         overlap_rate = stats['both_count'] / stats['union_size'] if stats['union_size'] > 0 else 0
+    #         overlap_rates.append(overlap_rate)
         
-        # Ensure X-axis is self-adaptive: map to 1, 2, 3, ..., N
-        if layer_numbers:
-            min_layer = min(layer_numbers)
-            max_layer = max(layer_numbers)
-            # Create mapping from original layer numbers to sequential 1, 2, 3, ...
-            layer_mapping = {orig: i+1 for i, orig in enumerate(sorted(set(layer_numbers)))}
-            # Update layer_numbers to be sequential
-            layer_numbers = [layer_mapping[num] for num in layer_numbers]
-            print(f"[PLOT] Layer range: {min_layer}-{max_layer} mapped to 1-{len(layer_mapping)}")
+    #     # Ensure X-axis is self-adaptive: map to 1, 2, 3, ..., N
+    #     if layer_numbers:
+    #         min_layer = min(layer_numbers)
+    #         max_layer = max(layer_numbers)
+    #         # Create mapping from original layer numbers to sequential 1, 2, 3, ...
+    #         layer_mapping = {orig: i+1 for i, orig in enumerate(sorted(set(layer_numbers)))}
+    #         # Update layer_numbers to be sequential
+    #         layer_numbers = [layer_mapping[num] for num in layer_numbers]
+    #         print(f"[PLOT] Layer range: {min_layer}-{max_layer} mapped to 1-{len(layer_mapping)}")
         
-        # Calculate difference rate instead of overlap rate
-        difference_rates = []
-        for layer in sorted_layers:
-            stats = composition_stats[layer]
-            # Difference rate = (mean_only + rate_only) / union_size = 1 - overlap_rate
-            difference_rate = (stats['mean_only_count'] + stats['rate_only_count']) / stats['union_size'] if stats['union_size'] > 0 else 0
-            difference_rates.append(difference_rate)
+    #     # Calculate difference rate instead of overlap rate
+    #     difference_rates = []
+    #     for layer in sorted_layers:
+    #         stats = composition_stats[layer]
+    #         # Difference rate = (mean_only + rate_only) / union_size = 1 - overlap_rate
+    #         difference_rate = (stats['mean_only_count'] + stats['rate_only_count']) / stats['union_size'] if stats['union_size'] > 0 else 0
+    #         difference_rates.append(difference_rate)
         
-        # Set matplotlib parameters to match results_fig style
-        plt.rcParams.update({
-            'font.size': 16,
-            'axes.titlesize': 16,
-            'axes.labelsize': 14,
-            'xtick.labelsize': 12,
-            'ytick.labelsize': 12,
-            'legend.fontsize': 14,
-            'figure.titlesize': 18,
-            'font.family': 'serif',
-            'axes.linewidth': 1.0,
-            'grid.alpha': 0.3
-        })
+    #     # Set matplotlib parameters to match results_fig style
+    #     plt.rcParams.update({
+    #         'font.size': 16,
+    #         'axes.titlesize': 16,
+    #         'axes.labelsize': 14,
+    #         'xtick.labelsize': 12,
+    #         'ytick.labelsize': 12,
+    #         'legend.fontsize': 14,
+    #         'figure.titlesize': 18,
+    #         'font.family': 'serif',
+    #         'axes.linewidth': 1.0,
+    #         'grid.alpha': 0.3
+    #     })
         
-        # Line width and marker size to match results_fig style
-        LW, MS = 2.5, 7.0
+    #     # Line width and marker size to match results_fig style
+    #     LW, MS = 2.5, 7.0
         
-        fig_width = max(12, len(layer_numbers) * 0.4)  
-        fig, ax = plt.subplots(figsize=(fig_width, 8))
+    #     fig_width = max(12, len(layer_numbers) * 0.4)  
+    #     fig, ax = plt.subplots(figsize=(fig_width, 8))
         
-        def get_model_display_name(model_name):
-            if 'bert' in model_name.lower():
-                if 'base' in model_name.lower():
-                    return 'BERT-BASE'
-                elif 'large' in model_name.lower():
-                    return 'BERT-LARGE'
-                else:
-                    return 'BERT'
-            elif 'vit' in model_name.lower() or 'clip' in model_name.lower():
-                if 'base' in model_name.lower():
-                    return 'CLIP-BASE'
-                elif 'large' in model_name.lower():
-                    return 'CLIP-LARGE'
-                else:
-                    return 'ViT'
-            elif 'qwen' in model_name.lower():
-                    return 'QWEN'
+    #     def get_model_display_name(model_name):
+    #         if 'bert' in model_name.lower():
+    #             if 'base' in model_name.lower():
+    #                 return 'BERT-BASE'
+    #             elif 'large' in model_name.lower():
+    #                 return 'BERT-LARGE'
+    #             else:
+    #                 return 'BERT'
+    #         elif 'vit' in model_name.lower() or 'clip' in model_name.lower():
+    #             if 'base' in model_name.lower():
+    #                 return 'CLIP-BASE'
+    #             elif 'large' in model_name.lower():
+    #                 return 'CLIP-LARGE'
+    #             else:
+    #                 return 'ViT'
+    #         elif 'qwen' in model_name.lower():
+    #                 return 'QWEN'
 
-            else:
-                return model_name.replace('_', '-').upper()
+    #         else:
+    #             return model_name.replace('_', '-').upper()
         
-        model_display = get_model_display_name(model_name)
-        dataset_display = dataset_name.upper()
-        suffix = save_suffix if save_suffix is not None else ("_early{}".format(early_layers) if early_only else "")
+    #     model_display = get_model_display_name(model_name)
+    #     dataset_display = dataset_name.upper()
+    #     suffix = save_suffix if save_suffix is not None else ("_early{}".format(early_layers) if early_only else "")
         
-        # Plot difference rate curve matching bert_base_tradeoff style
-        ax.plot(layer_numbers, difference_rates, 'o-', linewidth=LW, markersize=MS, 
-                color='#1f77b4', alpha=0.8, zorder=3)
+    #     # Plot difference rate curve matching bert_base_tradeoff style
+    #     ax.plot(layer_numbers, difference_rates, 'o-', linewidth=LW, markersize=MS, 
+    #             color='#1f77b4', alpha=0.8, zorder=3)
         
-        ax.set_xlabel('Number of MLP Layer', fontweight='bold')
-        ax.set_ylabel('Difference Rate', fontweight='bold')
+    #     ax.set_xlabel('Number of MLP Layer', fontweight='bold')
+    #     ax.set_ylabel('Difference Rate', fontweight='bold')
         
-        ax.set_ylim(0, 1)
-        ax.grid(True, alpha=0.3, linestyle='--', zorder=0)
+    #     ax.set_ylim(0, 1)
+    #     ax.grid(True, alpha=0.3, linestyle='--', zorder=0)
         
-        # Remove top and right spines to match bert_base_tradeoff style
-        ax.spines['top'].set_visible(False)
-        ax.spines['right'].set_visible(False)
+    #     # Remove top and right spines to match bert_base_tradeoff style
+    #     ax.spines['top'].set_visible(False)
+    #     ax.spines['right'].set_visible(False)
         
-        # Add dataset label in bottom-right corner (no bbox, simpler style)
-        ax.text(
-            0.97, 0.05, dataset_display,
-            transform=ax.transAxes,
-            ha='right', va='bottom',
-            fontsize=12, fontweight='bold',
-        )
+    #     # Add dataset label in bottom-right corner (no bbox, simpler style)
+    #     ax.text(
+    #         0.97, 0.05, dataset_display,
+    #         transform=ax.transAxes,
+    #         ha='right', va='bottom',
+    #         fontsize=12, fontweight='bold',
+    #     )
         
-        plt.tight_layout()
+    #     plt.tight_layout()
         
 
-        from datetime import datetime
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        base_filename = f"difference_rate_{model_name.replace('/', '_')}_{dataset_name}_{timestamp}"
-        svg_path = f"{base_filename}.svg"
-        pdf_path = f"{base_filename}.pdf"
+    #     from datetime import datetime
+    #     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    #     base_filename = f"difference_rate_{model_name.replace('/', '_')}_{dataset_name}_{timestamp}"
+    #     svg_path = f"{base_filename}.svg"
+    #     pdf_path = f"{base_filename}.pdf"
         
-        plt.savefig(svg_path, format='svg', bbox_inches='tight', dpi=300)
-        plt.savefig(pdf_path, format='pdf', bbox_inches='tight', dpi=300)
-        plt.close()
+    #     plt.savefig(svg_path, format='svg', bbox_inches='tight', dpi=300)
+    #     plt.savefig(pdf_path, format='pdf', bbox_inches='tight', dpi=300)
+    #     plt.close()
         
-        print(f"[VISUALIZATION] Saved difference rate charts: {svg_path}, {pdf_path}")
+    #     print(f"[VISUALIZATION] Saved difference rate charts: {svg_path}, {pdf_path}")
         
-        print(f"\n[DIFFERENCE RATE SUMMARY] {model_name} on {dataset_name}")
-        print(f"Total MLP layers analyzed: {len(sorted_layers)}")
-        print(f"Average difference rate: {np.mean(difference_rates):.3f}")
-        print(f"Difference rate range: {np.min(difference_rates):.3f} - {np.max(difference_rates):.3f}")
-        for i, layer in enumerate(sorted_layers):
-            stats = composition_stats[layer]
-            print(f"  Layer {layer_numbers[i]}: difference rate = {difference_rates[i]:.3f} "
-                  f"({stats['mean_only_count'] + stats['rate_only_count']}/{stats['union_size']} neurons)")
+    #     print(f"\n[DIFFERENCE RATE SUMMARY] {model_name} on {dataset_name}")
+    #     print(f"Total MLP layers analyzed: {len(sorted_layers)}")
+    #     print(f"Average difference rate: {np.mean(difference_rates):.3f}")
+    #     print(f"Difference rate range: {np.min(difference_rates):.3f} - {np.max(difference_rates):.3f}")
+    #     for i, layer in enumerate(sorted_layers):
+    #         stats = composition_stats[layer]
+    #         print(f"  Layer {layer_numbers[i]}: difference rate = {difference_rates[i]:.3f} "
+    #               f"({stats['mean_only_count'] + stats['rate_only_count']}/{stats['union_size']} neurons)")

@@ -2,7 +2,6 @@ import argparse
 import os
 from datetime import datetime
 import time
-
 import torch
 import wandb
 from torch.optim import AdamW
@@ -22,15 +21,11 @@ from stt.mlps.stt_linear2 import STTLinear  # Use the selective linear layer fro
 from stt.stt_transformer import STTTransformer  # Use the pruner from stt_transformer.py
 from stt.stt_tracker import STTTracker as NeuronTracker
 from stt.ablation_tracker import AblationTracker
-
 from stt.dataset import get_dataloader
 from util.torch_flops import (
     flops_forward,          
     flops_train_step,    
-    extract_inputs_from_batch,
-    LLM_MAXLEN,
     TEXT_MAXLEN,
-    infer_vit_seq_len,
     peek_vit_dataloader,
     prepare_flops_inputs_and_criterion
 )
@@ -46,17 +41,10 @@ from util.utils import (
     sample_active_set,
     evaluate_classification,
     setup_lora,
-    setup_stt_lora,
     VisionEncoderWithClassifier,
     calculate_jaccard_similarity,
-    calculate_directed_coverage
 )
-from sklearn.metrics import accuracy_score, f1_score, precision_recall_fscore_support 
-from typing import Any, Optional
-import math
-import torch
 from torch.utils.data import DataLoader
-from torch import nn
 MAG_TP_K_MAP = None
 MAG_TP_LAYER_NAME_MAP = None
 
@@ -893,8 +881,6 @@ def main():
                 "eval_post_prune_pre_recovery/throughput_avg": stats_pp["avg_throughput"],
                 "eval_post_prune_pre_recovery/batch/avg_time_ms": stats_pp["avg_batch_time"]*1000,
             })
-
-
         print("\n[mag_tp][recovery] start 1-epoch recovery fine-tuning on the pruned subnetwork...")
         try:
             del optimizer
@@ -918,9 +904,7 @@ def main():
                     trainable.append(p)
                 print(f"[mag_tp][recovery] trainable MLP:  {name}")
         print(f"[mag_tp][recovery] #trainable params: {sum(p.numel() for p in trainable):,}")
-
         optimizer_rec = AdamW(trainable, lr=args.recovery_lr, weight_decay=args.wd)
-
         try:
             F_train_variant = flops_train_step(model, _inp1_train, device=str(device), criterion=_criterion)
             print(f"[FLOPs] per-image train (mag_tp recovery): {F_train_rec/1e9:.3f} GFLOPs")

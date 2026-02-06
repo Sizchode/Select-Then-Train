@@ -36,7 +36,8 @@ def _get_image_dataloader(config, dataset_name, batch_size, image_size, dev_mode
     """Handle image datasets"""
 
     if dataset_name == "eurosat":
-        root_path = "/oscar/data/sbach/bats/datasets/eurosat/EuroSAT_RGB"
+        # TODO: Extract eurosat.zip and set the path to the extracted EuroSAT_RGB directory
+        root_path = "./datasets/eurosat/EuroSAT_RGB"  # TODO: Update this path after extracting eurosat.zip
         data_loader = EuroSATDataset(root_path, image_size=image_size)
         num_classes = 10
         train_dataloader = DataLoader(
