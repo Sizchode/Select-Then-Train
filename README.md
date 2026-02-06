@@ -36,36 +36,26 @@ We provide SLURM job scripts in the `scripts/` directory for running experiments
    - Set your personal tokens (HuggingFace token, WandB entity/project)
    - Define your experimental parameters (models, datasets, modes, hyperparameters)
 
-2. **Run LLM experiments**:
+2. **Run experiments** 
    ```bash
    cd scripts
-   sbatch test_llm        # For LLM training experiments
-   sbatch analyze_llm      # For LLM ablation studies
+   sbatch test_llm        # Decoder-only LLM training experiments
+   sbatch image_exp       # Vision Transformers (ViTs)
+   sbatch text_exp        # Encoder-only text models (BERT, etc.)
    ```
-
-3. **Run classification experiments**:
-   ```bash
-   cd scripts
-   sbatch image_exp       # For ViTs
-   sbatch text_exp        # For Bert 
-   ```
-
 **Available training modes:**
 - `stt`: Select-Then-Train with neuron selection
-- `stt_lora`: STT combined with LoRA
 - `magnitude_pruning`: Magnitude-based pruning baseline
 - `wanda_adapt`: Wanda adaptive pruning
 - `baseline`: Full fine-tuning baseline
-
-For direct Python execution without SLURM, you can run the training scripts directly:
-- `python train_llm.py --help` for LLM training options
-- `python train_classifier.py --help` for classification training options
 
 ## Tutorial: How to Use STT
 
 This section provides code examples for applying STT to different model types. The general workflow consists of three steps: (1) neuron selection using `STTTracker`, (2) model transformation using `STTTransformer`, and (3) training the transformed model.
 
-### For Vision Transformers (ViTs)
+### For Encoder-Only Transformers
+
+#### Vision Transformers (ViTs)
 
 ```python
 import torch
@@ -90,8 +80,7 @@ tracker = STTTracker(
     model=model,
     tokenizer=None,
     threshold=0.01,  
-    topk_ratio=0.1,  # customize sparsity
-    device=device  
+    topk_ratio=0.1  # customize sparsity
 )
 
 active_neurons = tracker.get_active_indices(dataloader=selection_dataloader)
@@ -102,9 +91,7 @@ transformer = STTTransformer(
     model=model,
     active_neurons=active_neurons,
     layer_name_map=layer_name_map,
-    verbose=True,
-    device=device,
-    inference_time=False  # Set to True for faster inference
+    verbose=True  # Set inference_time=True for faster inference
 )
 
 pruned_model = transformer.transform().to(device)
@@ -137,7 +124,7 @@ for name, module in pruned_model.named_modules():
         module.pad_weights(pad_to=128)
 ```
 
-### For BERT and Text Classification Models
+#### Bert
 
 ```python
 import torch
@@ -164,7 +151,6 @@ tracker = STTTracker(
     tokenizer=tokenizer,  # Tokenizer required for text models
     threshold=0.01,
     topk_ratio=0.1,
-    device=device,
     verbose=True
 )
 
@@ -176,9 +162,7 @@ transformer = STTTransformer(
     model=model,
     active_neurons=active_neurons,
     layer_name_map=layer_name_map,
-    verbose=True,
-    device=device,
-    inference_time=False
+    verbose=True
 )
 
 pruned_model = transformer.transform().to(device)
@@ -210,7 +194,7 @@ for name, module in pruned_model.named_modules():
         module.pad_weights(pad_to=128)
 ```
 
-### For Large Language Models (LLMs)
+### For Decoder-Only Transformers (GPT, Qwen, Llama, etc.)
 
 ```python
 import torch
@@ -219,7 +203,6 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 from stt.stt_tracker import STTTracker
 from stt.stt_transformer import STTTransformer
 from stt.mlps.stt_linear2 import STTLinear
-from stt.stt_lora import STTLoraLinear
 
 # 1. Load model and tokenizer
 model_name = "Qwen/Qwen2-0.5B"
@@ -239,7 +222,6 @@ tracker = STTTracker(
     tokenizer=tokenizer,
     threshold=0.01,
     topk_ratio=0.1,
-    device=device,
     verbose=True
 )
 
@@ -251,39 +233,17 @@ transformer = STTTransformer(
     model=model,
     active_neurons=active_neurons,
     layer_name_map=layer_name_map,
-    verbose=True,
-    device=device,
-    inference_time=False
+    verbose=True
 )
 
 pruned_model = transformer.transform().to(device)
 
-# 5. Optional: Apply STT+LoRA for even more parameter efficiency
-# Replace STTLinear layers with STTLoraLinear
-for name, module in pruned_model.named_modules():
-    if isinstance(module, STTLinear):
-        parent_name = name.rsplit('.', 1)[0] if '.' in name else ''
-        attr_name = name.split('.')[-1]
-        parent = pruned_model
-        if parent_name:
-            for part in parent_name.split('.'):
-                parent = getattr(parent, part)
-        
-        stt_lora = STTLoraLinear(
-            stt_linear=module,
-            r=32,  # LoRA rank
-            lora_alpha=64,
-            lora_dropout=0.1,
-            merge_weights=False
-        )
-        setattr(parent, attr_name, stt_lora)
-
-# 6. Set trainable parameters
+# 5. Set trainable parameters
 for param in pruned_model.parameters():
     param.requires_grad = False
 
 for name, module in pruned_model.named_modules():
-    if isinstance(module, (STTLinear, STTLoraLinear)):
+    if isinstance(module, STTLinear):
         for param in module.parameters():
             param.requires_grad = True
     # Also train output head (lm_head)
@@ -291,10 +251,10 @@ for name, module in pruned_model.named_modules():
         for param in module.parameters():
             param.requires_grad = True
 
-# 7. Train with your preferred training framework (e.g., HuggingFace Trainer)
+# 6. Train with your preferred training framework (e.g., HuggingFace Trainer)
 # ... training setup ...
 
-# 8. After training, switch to inference mode
+# 7. After training, switch to inference mode
 pruned_model.eval()  # Set to evaluation mode
 
 # Enable inference_time only for gate_proj and up_proj (not down_proj)
@@ -310,11 +270,11 @@ for name, module in pruned_model.named_modules():
 
 ### Key Parameters
 
-- **`topk_ratio`**: Fraction of neurons to keep (e.g., 0.1 = keep top 10%)
+- **`topk_ratio`**: Fraction of neurons to keep
 - **`threshold`**: Activation threshold for neuron selection
 - **`inference_time`**: If `True`, uses direct pruning for faster inference (requires padding). If `False`, uses scatter mode for flexible training.
 
-For more details, refer to the implementation in `train_classifier.py` (ViTs/BERTs) and `train_llm.py` (LLMs).
+For more details, refer to the implementation in `train_classifier.py` (encoder-only models) and `train_llm.py` (decoder-only LLMs).
 
 ## Project Structure
 
@@ -334,16 +294,16 @@ stt/
 │   ├── torch_flops.py      # FLOPs estimation
 │   └── utils.py            # Helper functions
 ├── scripts/                # SLURM job scripts
-│   ├── analyze_llm         # LLM ablation experiments
-│   ├── test_llm            # LLM training experiments
-│   ├── image_exp           # Image classification experiments
-│   └── text_exp            # Text classification experiments
+│   ├── analyze_llm         # Decoder-only LLM ablation experiments
+│   ├── test_llm            # Decoder-only LLM training experiments
+│   ├── image_exp           # Vision Transformer experiments
+│   └── text_exp            # Encoder-only text model experiments
 ├── datasets/               # Dataset files
 │   └── clutrr/           # CLUTRR dataset (included)
-├── train_llm.py           # LLM training script
-├── train_classifier.py    # Classification training script
-├── llm_ablation.py        # LLM ablation studies
-├── classifier_ablation.py # Classification ablation studies
+├── train_llm.py           # Decoder-only LLM training script
+├── train_classifier.py    # Encoder-only model training script
+├── llm_ablation.py        # Decoder-only LLM ablation studies
+├── classifier_ablation.py # Encoder-only model ablation studies
 ├── META.py                # Dataset path configuration
 ├── requirements.txt       # Python dependencies
 └── README.md              # This file
