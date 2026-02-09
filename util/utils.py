@@ -10,8 +10,7 @@ import numpy as np
 import torch.nn as nn
 from collections import defaultdict
 
-from stt.mlps.stt_linear import STTLinear
-from stt.mlps.stt_linear2 import STTLinear as STTLinear2
+from stt.mlps.stt_linear2 import STTLinear
 from stt.stt_lora import STTLoraLinear
 # from diet.tracker2 import NeuronTracker
 
@@ -777,8 +776,6 @@ def pad_all_nslinear_modules(model, pad_to: int):
     Returns:
         Number of modules padded
     """
-    from diet.mlps.ns_linear2 import STTLinear as STTLinear2
-    
     padded_count = 0
     
     # Detect model type and get layers
@@ -855,8 +852,8 @@ def pad_all_nslinear_modules(model, pad_to: int):
             if base is not None:
                 m = base
             
-            # Only pad STTLinear modules (from ns_linear2)
-            if isinstance(m, STTLinear2):
+            # Only pad STTLinear modules
+            if isinstance(m, STTLinear):
                 # Debug info for first layer only
                 if layer_idx == 0:
                     w_shape = tuple(m.linear.weight.shape)
@@ -881,18 +878,16 @@ def benchmark_nslinear_padding(model, device="cuda", pad_values=[None, 128, 256]
     Returns:
         List of tuples: (name, throughput, latency_ms)
     """
-    from diet.mlps.ns_linear2 import STTLinear as STTLinear2
-    
     # Save STTLinear modules info for restoration
     nslinear_modules_info = {}
     for name, module in model.named_modules():
-        if isinstance(module, STTLinear2):
+        if isinstance(module, STTLinear):
             # Unwrap if needed
             base = getattr(module, "stt_linear", None)
             if base is not None:
                 module = base
             
-            if isinstance(module, STTLinear2):
+            if isinstance(module, STTLinear):
                 nslinear_modules_info[name] = {
                     'module': module,
                     'original_in_features': module.original_in_features,
@@ -916,7 +911,7 @@ def benchmark_nslinear_padding(model, device="cuda", pad_values=[None, 128, 256]
             attr_name = parts[-1]
             
             # Recreate STTLinear module
-            ns_linear = STTLinear2(
+            ns_linear = STTLinear(
                 in_features=info['original_in_features'],
                 out_features=info['original_out_features'],
                 in_indices=info['in_indices'],

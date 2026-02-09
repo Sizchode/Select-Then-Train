@@ -233,7 +233,6 @@ class STTTransformer:
 
     def get_transformed_mlp_blocks(self):
         return self.transformed_mlp_blocks
-    #### ====== Added a helper to extract all subsets of active neurons ====== ####
     def record_original_active_indices(self) -> None:
         """Record active neuron indices in terms of the original weight matrix, without modifying model."""
         logger.info("Recording original intermediate indices only (no pruning)")

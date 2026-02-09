@@ -87,11 +87,7 @@ class STTLinear(nn.Module):
                     f"In inference_time mode, input should have {self.original_in_features} features, "
                     f"but got {actual_in_features}."
                 )
-            # In inference_time mode, gate/up layers receive full input
-            # They don't need in_indices (input is already full), but if in_indices exists, use it
             if self.in_indices is not None:
-                # Use advanced indexing instead of index_select to potentially reduce memory overhead
-                # Both create new tensors, but advanced indexing might be slightly more efficient
                 x_active = x_flat[:, self.in_indices]
             else:
                 x_active = x_flat
@@ -102,28 +98,14 @@ class STTLinear(nn.Module):
         # Expand output to original size if needed
         if self.out_indices is not None:
             if not self.inference_time:
-                # Scatter version: expand to original size
                 output_flat = torch.zeros(x_flat.shape[0], self.original_out_features,
                                           device=output_active.device, dtype=output_active.dtype)
                 output_flat[:, self.out_indices] = output_active
             else:
-                # Inference time: return reduced dimensions directly (no scatter)
                 output_flat = output_active
-                # Note: output shape will be (batch, active_out_features) instead of (batch, original_out_features)
-                # Optimized implementation with buffer reuse (tried but didn't improve performance):
-                # batch_size = x_flat.shape[0]
-                # if self._scatter_buffer is None or self._scatter_buffer.shape[0] < batch_size:
-                #     self._scatter_buffer = torch.zeros(
-                #         batch_size, self.original_out_features,
-                #         device=output_active.device, dtype=output_active.dtype
-                #     )
-                # output_flat = self._scatter_buffer[:batch_size]
-                # output_flat.zero_()
-                # output_flat[:, self.out_indices] = output_active
         else:
             output_flat = output_active
 
-        # Restore original batch dimensions
         if len(batch_dims) > 0:
             output_dim = self.active_out_features if (self.inference_time and self.out_indices is not None) else self.original_out_features
             output = output_flat.reshape(batch_dims + (output_dim,))

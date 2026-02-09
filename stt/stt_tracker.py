@@ -37,7 +37,6 @@ class STTTracker:
             "count": 0                
         })
         self.hooks = []
-# Removed Wanda-related attributes (moved to wanda_adapt_tracker.py)
 
     def _hook_fn(self, module, input, output):
         name = self.layer_name_map[module]

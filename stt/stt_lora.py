@@ -112,16 +112,6 @@ class STTLoraLinear(nn.Module):
                 dtype=combined_output.dtype
             )
             output_flat[:, self.stt_linear.out_indices] = combined_output
-            # Optimized implementation with buffer reuse (tried but didn't improve performance):
-            # batch_size = x_flat.shape[0]
-            # if not hasattr(self, '_scatter_buffer') or self._scatter_buffer is None or self._scatter_buffer.shape[0] < batch_size:
-            #     self._scatter_buffer = torch.zeros(
-            #         batch_size, self.original_out_features,
-            #         device=combined_output.device, dtype=combined_output.dtype
-            #     )
-            # output_flat = self._scatter_buffer[:batch_size]
-            # output_flat.zero_()
-            # output_flat[:, self.stt_linear.out_indices] = combined_output
         else:
             output_flat = combined_output
 
