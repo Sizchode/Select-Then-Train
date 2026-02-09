@@ -16,6 +16,15 @@
 source ~/miniconda3/etc/profile.d/conda.sh    # TODO: Set your conda path
 conda activate YOUR_ENV_NAME                   # TODO: Set your conda environment name
 
+# TODO: Set your personal tokens and paths
+export HUGGINGFACE_HUB_TOKEN="YOUR_HF_TOKEN"  # TODO: Set your HuggingFace token
+export TOKENIZERS_PARALLELISM=false
+export HF_HOME=/path/to/your/hf_cache          # TODO: Set your HF cache path
+export PY=~/miniconda3/envs/YOUR_ENV/bin/python # TODO: Set your Python path
+export PYTHONPATH=$PYTHONPATH:$(pwd)/..
+export WANDB_ENTITY="YOUR_WANDB_ENTITY"       # TODO: Set your WandB entity
+export WANDB_PROJECT="YOUR_PROJECT_NAME"      # TODO: Set your WandB project name
+
 echo "==== ENVIRONMENT INFORMATION ===="
 echo "Job ID: $SLURM_JOB_ID"
 echo "Running on host: $(hostname)"
@@ -26,13 +35,6 @@ echo "CUDA devices: $CUDA_VISIBLE_DEVICES"
 echo "WandB Entity: $WANDB_ENTITY"
 echo "WandB Project: $WANDB_PROJECT"
 date
-
-# TODO: Set your personal tokens and paths
-export HUGGINGFACE_HUB_TOKEN="YOUR_HF_TOKEN"  # TODO: Set your HuggingFace token
-export TOKENIZERS_PARALLELISM=false
-export HF_HOME=/path/to/your/hf_cache          # TODO: Set your HF cache path
-export PY=~/miniconda3/envs/YOUR_ENV/bin/python # TODO: Set your Python path
-export PYTHONPATH=$PYTHONPATH:$(pwd)/..
 
 # TODO: Define your experimental parameters
 MODELS=("")      # TODO: Set your model list

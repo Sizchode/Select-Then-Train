@@ -45,9 +45,8 @@ from util.utils import (
     setup_lora,
     VisionEncoderWithClassifier,
     clear_cuda_cache_and_states,
-    pad_all_nslinear_modules,
     bench_forward,
-    bench_forward_image
+    bench_forward_image,
 )
 import torch
 from torch.utils.data import DataLoader
@@ -884,9 +883,11 @@ def main():
             "train_runtime": pure_train_time,
             "eval_runtime_total": total_eval_time
         })
-    is_stt_mode = args.mode == "stt"    
-    if is_stt_mode:
-        print("\n[Evaluation] inference throughput for pruning...")
+    is_stt_mode = args.mode == "stt"
+    is_stt_lora_mode = args.mode == "stt_lora"
+    
+    if is_stt_mode or is_stt_lora_mode:
+        print("\n[Evaluation] Preparing for inference...")
         clear_cuda_cache_and_states(
             optimizer=optimizer if 'optimizer' in locals() else None,
             trainer=None,  # train_classifier doesn't use trainer object
@@ -894,6 +895,17 @@ def main():
             device=device,
             verbose=True
         )
+        
+        # Step 1: Merge and replace STTLoraLinear if in stt_lora mode
+        if is_stt_lora_mode:
+            print("[Merge & Replace] Merging STTLoraLinear weights and replacing with STTLinear...")
+            STTLoraLinear.merge_and_replace_all(model)
+            if device == "cuda":
+                torch.cuda.empty_cache()
+                torch.cuda.synchronize()
+        
+        # Step 2: Set inference_time mode
+        print("[Evaluation] Setting inference_time mode...")
         modified_count = 0
         for name, module in model.named_modules():
             if isinstance(module, STTLinear):
@@ -917,12 +929,18 @@ def main():
             torch.cuda.synchronize()
         print(f"[Evaluation] Model switched to inference_time mode")
         print(f"[Evaluation] Modified {modified_count} gate/up/fc1/intermediate modules to inference_time=True")
+        
+        # Step 3: Apply padding
         print(f"\n[Padding] Applying padding 128 for True Pruning mode...")
-        pad_all_nslinear_modules(model, pad_to=128)
+        padded_count = 0
+        for name, module in model.named_modules():
+            if isinstance(module, STTLinear):
+                module.pad_weights(pad_to=128)
+                padded_count += 1
         if device == "cuda":
             torch.cuda.empty_cache()
             torch.cuda.synchronize()
-        print("[Padding] Padding applied successfully.")
+        print(f"[Padding] Applied padding to {padded_count} STTLinear modules")
     else:
         print("\n[Evaluation] Using baseline mode (no pruning)")
     

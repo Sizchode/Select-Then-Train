@@ -158,3 +158,67 @@ class STTLoraLinear(nn.Module):
                 f"active_in={self.in_features}, active_out={self.out_features}, "
                 f"r={self.r}, alpha={self.lora_alpha}, "
                 f"bias={self.stt_linear.linear.bias is not None})")
+
+    @classmethod
+    def merge_and_replace_all(cls, model):
+        """
+        Merge all STTLoraLinear weights into STTLinear and replace STTLoraLinear with STTLinear.
+        
+        This class method:
+        1. Merges LoRA weights into the base STTLinear weights for all STTLoraLinear instances
+        2. Replaces STTLoraLinear modules with their underlying STTLinear modules
+        
+        This is useful after training when you want to:
+        - Remove the LoRA wrapper for inference
+        - Apply inference_time mode and padding to the merged model
+        
+        Args:
+            model: Model containing STTLoraLinear modules
+            
+        Returns:
+            Number of modules replaced
+        """
+        replacements = []
+        
+        # First, merge all STTLoraLinear weights
+        merge_count = 0
+        for name, module in model.named_modules():
+            if isinstance(module, cls):
+                if not module.merge_weights:
+                    module.merge()
+                    merge_count += 1
+        
+        if merge_count > 0:
+            print(f"[Merge] Merged {merge_count} STTLoraLinear modules")
+        
+        # Then, replace STTLoraLinear with STTLinear
+        for name, module in model.named_modules():
+            if isinstance(module, cls):
+                # Get parent and attribute name
+                parts = name.split('.')
+                parent_name = '.'.join(parts[:-1])
+                attr_name = parts[-1]
+                
+                # Get parent module
+                if parent_name:
+                    parent = model
+                    for part in parent_name.split('.'):
+                        parent = getattr(parent, part)
+                else:
+                    parent = model
+                
+                # Get the underlying STTLinear (already has merged weights)
+                stt_linear = module.stt_linear
+                
+                # Store replacement info
+                replacements.append((parent, attr_name, stt_linear, name))
+        
+        # Perform replacements
+        for parent, attr_name, stt_linear, full_name in replacements:
+            setattr(parent, attr_name, stt_linear)
+            print(f"[Replace] Replaced {full_name}: STTLoraLinear -> STTLinear")
+        
+        if replacements:
+            print(f"[Replace] Total: {len(replacements)} modules replaced")
+        
+        return len(replacements)

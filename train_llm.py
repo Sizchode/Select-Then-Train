@@ -24,7 +24,6 @@ from stt.stt_lora import STTLoraLinear
 from util.utils import (
     set_seed,
     bench_forward,
-    pad_all_nslinear_modules,
     clear_cuda_cache_and_states,
 )
 from util.torch_flops import (
@@ -623,9 +622,10 @@ def main():
 
     # Only test stt and baseline modes
     is_stt_mode = args.mode == "stt"
+    is_stt_lora_mode = args.mode == "stt_lora"
     
-    if is_stt_mode:
-        print("\n[Evaluation] inference throughput for pruning...")
+    if is_stt_mode or is_stt_lora_mode:
+        print("\n[Evaluation] Preparing for inference...")
         clear_cuda_cache_and_states(
             optimizer=optimizer,
             trainer=trainer,
@@ -633,6 +633,15 @@ def main():
             device=device,
             verbose=True
         )
+        
+        if is_stt_lora_mode:
+            print("[Merge & Replace] Merging STTLoraLinear weights and replacing with STTLinear...")
+            STTLoraLinear.merge_and_replace_all(model)
+            if device == "cuda":
+                torch.cuda.empty_cache()
+                torch.cuda.synchronize()
+        
+        print("[Evaluation] Setting inference_time mode...")
         modified_count = 0
         for name, module in model.named_modules():
             if isinstance(module, STTLinear):
@@ -647,12 +656,17 @@ def main():
         print(f"[Evaluation] Model switched to inference_time mode (gate/up only, down_proj remains False)")
         print(f"[Evaluation] Modified {modified_count} gate/up_proj modules to inference_time=True")
         
+        # Step 3: Apply padding
         print(f"\n[Padding] Applying padding 128 for True Pruning mode...")
-        pad_all_nslinear_modules(model, pad_to=128)
+        padded_count = 0
+        for name, module in model.named_modules():
+            if isinstance(module, STTLinear):
+                module.pad_weights(pad_to=128)
+                padded_count += 1
         if device == "cuda":
             torch.cuda.empty_cache()
             torch.cuda.synchronize()
-        print("[Padding] Padding applied successfully.")
+        print(f"[Padding] Applied padding to {padded_count} STTLinear modules")
         
     else:
         print("\n[Evaluation] Using baseline mode (no pruning)")

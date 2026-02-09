@@ -185,3 +185,4 @@ class CustomSFTTrainerV2(SFTTrainer):
                 wandb.log({"model/neuron_usage_histogram": wandb.Histogram(percentages)})
 
         except Exception as e:
+            print(f"Error logging model info to WandB: {e}")

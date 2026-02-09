@@ -943,7 +943,9 @@ def benchmark_nslinear_padding(model, device="cuda", pad_values=[None, 128, 256]
         
         # Apply padding if needed
         if pad_to is not None:
-            pad_all_nslinear_modules(model, pad_to=pad_to)
+            for name, module in model.named_modules():
+                if isinstance(module, STTLinear):
+                    module.pad_weights(pad_to=pad_to)
             if device == "cuda":
                 torch.cuda.empty_cache()
                 torch.cuda.synchronize()

@@ -67,7 +67,7 @@ for LLM_MODEL in "${MODELS[@]}";do
                   lr_tag="${lr/./_}"     
                   tk_tag="${tk/./_}"     
                   outdir="outputs/${mode}_${ds}_lr${lr_tag}_tk${tk_tag}"  # TODO: Set your output directory
-                  cmd="--lr $lr --recovery_lr $recovery_lr --wd 0.1 --train_batch 4 --active_threshold -0.1 --num_epoch 3 --mode $mode --gradient_accumulation_steps 2 --source_task $src_task --source_ratio $src_r"
+                  cmd="--lr $lr --wd 0.1 --train_batch 4 --active_threshold -0.1 --num_epoch 3 --mode $mode --gradient_accumulation_steps 2"
                   cmd="$cmd --active_sample_ratio 0.01 --topk_ratio $tk --task $ds --model $LLM_MODEL"
                   cmd="$cmd --output_dir $outdir"  
                   cmd="$cmd --seed $seed"
