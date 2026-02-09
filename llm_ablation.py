@@ -14,7 +14,7 @@ import os
 from META import LLM_DATASET_PATHS as dataset_paths  # Assuming this exists
 from stt.dataset import CLUTRR
 from stt.dataset.genloader_2 import BoolQ, ARC
-from stt.mlps.stt_linear2 import STTLinear
+from stt.mlps.stt_linear import STTLinear
 from stt.stt_transformer import STTTransformer
 from stt.stt_tracker import STTTracker as NeuronTracker
 from stt.ablation_tracker import AblationTracker

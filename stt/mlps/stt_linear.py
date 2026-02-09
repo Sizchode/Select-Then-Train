@@ -1,218 +1,253 @@
 import torch
 from torch import nn
 import logging
-from typing import Optional
-
+from typing import Optional, Union
+import torch.nn.functional as F
 logger = logging.getLogger(__name__)
 
 
 class STTLinear(nn.Module):
+    """
+    STT (Select-Then-Train) Linear layer that operates with reduced dimensions.
+    """
+
     def __init__(
             self,
             in_features: int,
             out_features: int,
             in_indices: Optional[torch.Tensor] = None,
             out_indices: Optional[torch.Tensor] = None,
-            tune: bool = True,
             bias: bool = True,
-            pass_through: bool = False,
-            eps: float = 1e-9,
+            device: Optional[Union[str, torch.device]] = None,
+            dtype: Optional[torch.dtype] = None,
+            inference_time: bool = False,
     ):
         super().__init__()
+        factory_kwargs = {'device': device, 'dtype': dtype}
 
-        self.pass_through = pass_through
-
-        # For pass_through mode, we no longer require in_features == out_features
-        # since we'll still use the linear transformation but handle inactive neurons specially
-
-        if in_indices is not None:
-            if not isinstance(in_indices, torch.Tensor) or in_indices.ndim != 1:
-                raise ValueError("in_indices must be a 1D Tensor or None")
-            in_indices = in_indices.to(torch.int64)
-        self.register_buffer('in_indices', in_indices)
-
-        if out_indices is not None:
-            if not isinstance(out_indices, torch.Tensor) or out_indices.ndim != 1:
-                raise ValueError("out_indices must be a 1D Tensor or None")
-            out_indices = out_indices.to(torch.int64)
-        self.register_buffer('out_indices', out_indices)
-
+        # Store original dimensions for reference
         self.original_in_features = in_features
         self.original_out_features = out_features
 
-        self.eps = eps
+        # Get actual dimensions based on indices
+        self.active_in_features = len(in_indices) if in_indices is not None else in_features
+        self.active_out_features = len(out_indices) if out_indices is not None else out_features
 
-        # Always create a linear layer, even in pass_through mode
-        self.in_features = len(self.in_indices) if self.in_indices is not None else in_features
-        self.out_features = len(self.out_indices) if self.out_indices is not None else out_features
-        self.linear = nn.Linear(self.in_features, self.out_features, bias=bias)
-        self.linear.requires_grad_(tune)
+        # Store indices
+        self.register_buffer('in_indices', in_indices)
+        self.register_buffer('out_indices', out_indices)
+        
+        # Inference time mode: if True, return reduced dimensions directly (no scatter)
+        self.inference_time = inference_time
 
-        self.tune = tune
-
-    @property
-    def weight(self):
-        return self.linear.weight
-
-    @property
-    def bias(self):
-        return self.linear.bias
+        # Create the reduced linear layer
+        self.linear = nn.Linear(self.active_in_features, self.active_out_features, bias=bias, **factory_kwargs)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        _in_indices = self.in_indices
-        _out_indices = self.out_indices
-
-        # Early exit for empty indices
-        if (_in_indices is not None and len(_in_indices) == 0) or (_out_indices is not None and len(_out_indices) == 0):
-            return x
-
-        # Simple case: no indices specified
-        if _in_indices is None and _out_indices is None:
-            if not (self.linear.in_features == self.original_in_features and
-                    self.linear.out_features == self.original_out_features):
-                pass
-            return self.linear(x)
-
-        # Reshape input tensor
+        # Preserve original shape information
         original_shape = x.shape
         batch_dims = original_shape[:-1]
-        try:
-            x_flat = x.view(-1, self.original_in_features)
-        except RuntimeError:
-            x_flat = x.reshape(-1, self.original_in_features)
+        actual_in_features = x.shape[-1]
 
-        # Select input features based on in_indices
-        if _in_indices is not None:
-            x_selected = torch.index_select(x_flat, 1, _in_indices)
+        # Reshape to 2D for processing
+        if len(batch_dims) > 0:
+            x_flat = x.reshape(-1, actual_in_features)
         else:
-            x_selected = x_flat
+            x_flat = x.unsqueeze(0)  # Add batch dimension if none
+            actual_in_features = x_flat.shape[-1]
 
-        # Forward through linear layer
-        output_selected = self.linear(x_selected)
+        # Determine if input is already reduced
+        input_is_reduced = (actual_in_features == self.active_in_features)
+        input_is_full = (actual_in_features == self.original_in_features)
 
-        if _out_indices is not None:
-            batch_prod = output_selected.shape[0]
-
-            # Initialize output with very small values (or zeros)
-            if self.pass_through and _in_indices is not None and _out_indices is not None:
-                # For pass-through: initialize with the original input for values we want to preserve
-                # We can only do direct pass-through when in_features == out_features
-                if self.original_in_features == self.original_out_features:
-                    output_flat = x_flat.clone()
+        # Select input features based on mode and input state
+        if not self.inference_time:
+            # Scatter mode OR down layer in inference time mode
+            if input_is_reduced and self.in_indices is not None:
+                # Input is already reduced (down layer receives reduced input from gate/up in inference time)
+                # Skip index_select - input is already the active features
+                x_active = x_flat
+            elif input_is_full:
+                # Scatter mode: input is full dimensions, need to select active features
+                if self.in_indices is not None:
+                    # Use advanced indexing instead of index_select to potentially reduce memory overhead
+                    x_active = x_flat[:, self.in_indices]
                 else:
-                    output_flat = torch.ones(
-                        batch_prod, self.original_out_features,
-                        dtype=output_selected.dtype, device=output_selected.device
-                    ) * torch.sum(x_flat, dim=1, keepdim=True)
+                    x_active = x_flat
             else:
-                output_flat = torch.ones(
-                    batch_prod, self.original_out_features,
-                    dtype=output_selected.dtype, device=output_selected.device
-                ) * self.eps
-
-            output_flat[:, _out_indices] = output_selected
+                raise ValueError(
+                    f"Unexpected input dimension: {actual_in_features}. "
+                    f"Expected either {self.original_in_features} (full) or {self.active_in_features} (reduced)."
+                )
         else:
-            if output_selected.shape[-1] != self.original_out_features:
-                raise RuntimeError(f"Output dimension mismatch: Expected {self.original_out_features}, "
-                                f"got {output_selected.shape[-1]} from linear layer. "
-                                f"Layer config: in_idx={_in_indices is not None}, out_idx={_out_indices is not None}")
-            output_flat = output_selected
+            # Inference time mode: gate/up layers
+            # Input should be full dimensions, select active features for output
+            if not input_is_full:
+                raise ValueError(
+                    f"In inference_time mode, input should have {self.original_in_features} features, "
+                    f"but got {actual_in_features}."
+                )
+            if self.in_indices is not None:
+                x_active = x_flat[:, self.in_indices]
+            else:
+                x_active = x_flat
 
-        if batch_dims:
-            final_shape = batch_dims + (self.original_out_features,)
-            try:
-                output = output_flat.view(final_shape)
-            except RuntimeError:
-                output = output_flat.reshape(final_shape)
+        # Apply reduced linear layer
+        output_active = self.linear(x_active)
+
+        # Expand output to original size if needed
+        if self.out_indices is not None:
+            if not self.inference_time:
+                output_flat = torch.zeros(x_flat.shape[0], self.original_out_features,
+                                          device=output_active.device, dtype=output_active.dtype)
+                output_flat[:, self.out_indices] = output_active
+            else:
+                output_flat = output_active
         else:
-            output = output_flat.squeeze(0)
+            output_flat = output_active
+
+        if len(batch_dims) > 0:
+            output_dim = self.active_out_features if (self.inference_time and self.out_indices is not None) else self.original_out_features
+            output = output_flat.reshape(batch_dims + (output_dim,))
+        else:
+            output = output_flat.squeeze(0)  # Remove batch dimension if added
 
         return output
-
-    def get_stats(self):
-        orig_in = self.original_in_features
-        orig_out = self.original_out_features
-
-        sel_in = self.in_features
-        sel_out = self.out_features
-
-        orig_params_w = orig_in * orig_out
-        sel_params_w = sel_in * sel_out
-
-        orig_params_b = orig_out if self.linear.bias is not None else 0
-        sel_params_b = sel_out if self.linear.bias is not None else 0
-
-        orig_params_total = orig_params_w + orig_params_b
-        sel_params_total = sel_params_w + sel_params_b
-
-        param_reduction = 1.0 - (sel_params_total / orig_params_total) if orig_params_total > 0 else 0.0
-        input_reduction = 1.0 - (sel_in / orig_in) if orig_in > 0 else 0.0
-        output_reduction = 1.0 - (sel_out / orig_out) if orig_out > 0 else 0.0
-
-        return {
-            "original_in_features": orig_in,
-            "original_out_features": orig_out,
-            "selected_in_features": sel_in,
-            "selected_out_features": sel_out,
-            "input_reduction%": input_reduction * 100,
-            "output_reduction%": output_reduction * 100,
-            "parameter_reduction%": param_reduction * 100,
-            "selected_parameters": sel_params_total,
-            "original_parameters": orig_params_total,
-            "has_bias": self.linear.bias is not None,
-            "pass_through": self.pass_through,
-        }
-
-    def extra_repr(self) -> str:
-        stats = self.get_stats()
-        return (f'orig=({stats["original_in_features"]}->{stats["original_out_features"]}), '
-                f'sel=({stats["selected_in_features"]}->{stats["selected_out_features"]}), '
-                f'bias={stats["has_bias"]}, tune={self.tune}, pass_through={self.pass_through}')
-
     @classmethod
-    def from_linear(cls, original_module: nn.Linear, in_indices=None, out_indices=None, tune=True, bias=None,
-                    pass_through=False):
+    def from_linear(
+            cls,
+            original_module: nn.Linear,
+            in_indices: Optional[torch.Tensor] = None,
+            out_indices: Optional[torch.Tensor] = None,
+            **kwargs
+    ):
+        """Creates a STTLinear layer from a standard nn.Linear layer."""
         if not isinstance(original_module, nn.Linear):
             raise TypeError("original_module must be an instance of nn.Linear")
 
         orig_out_features, orig_in_features = original_module.weight.shape
-
-        has_bias = bias if bias is not None else (hasattr(original_module, 'bias') and original_module.bias is not None)
+        has_bias = original_module.bias is not None
+        device = original_module.weight.device
+        dtype = original_module.weight.dtype
 
         instance = cls(
             in_features=orig_in_features,
             out_features=orig_out_features,
             in_indices=in_indices,
             out_indices=out_indices,
-            tune=tune,
             bias=has_bias,
-            pass_through=pass_through
+            device=device,
+            dtype=dtype,
+            inference_time=kwargs.get('inference_time', False)
         )
 
+        # Copy weights and biases
         with torch.no_grad():
             if in_indices is not None and out_indices is not None:
-                selected_weight = original_module.weight[out_indices][:, in_indices]
+                # Both input and output dimensions are reduced
+                reduced_weight = original_module.weight[out_indices][:, in_indices]
+                instance.linear.weight.copy_(reduced_weight)
+
+                if has_bias and instance.linear.bias is not None:
+                    reduced_bias = original_module.bias[out_indices]
+                    instance.linear.bias.copy_(reduced_bias)
+
             elif in_indices is not None:
-                selected_weight = original_module.weight[:, in_indices]
+                # Only input dimension is reduced
+                reduced_weight = original_module.weight[:, in_indices]
+                instance.linear.weight.copy_(reduced_weight)
+
+                if has_bias and instance.linear.bias is not None:
+                    instance.linear.bias.copy_(original_module.bias)
+
             elif out_indices is not None:
-                selected_weight = original_module.weight[out_indices]
+                # Only output dimension is reduced
+                reduced_weight = original_module.weight[out_indices]
+                instance.linear.weight.copy_(reduced_weight)
+
+                if has_bias and instance.linear.bias is not None:
+                    reduced_bias = original_module.bias[out_indices]
+                    instance.linear.bias.copy_(reduced_bias)
+
             else:
-                selected_weight = original_module.weight.clone()
+                # No reduction, just copy
+                instance.linear.weight.copy_(original_module.weight)
 
-            if selected_weight.shape != instance.linear.weight.shape:
-                raise RuntimeError(f"Shape mismatch during weight copy: "
-                                  f"Selected weight {selected_weight.shape}, "
-                                  f"Target linear layer weight {instance.linear.weight.shape}. "
-                                  f"In indices: {in_indices.shape if in_indices is not None else None}, "
-                                  f"Out indices: {out_indices.shape if out_indices is not None else None}")
-
-            instance.linear.weight.copy_(selected_weight)
-
-            if has_bias and hasattr(original_module, 'bias') and original_module.bias is not None:
-                if out_indices is not None:
-                    selected_bias = original_module.bias[out_indices]
-                else:
-                    selected_bias = original_module.bias.clone()
-                instance.linear.bias.copy_(selected_bias)
-
+                if has_bias and instance.linear.bias is not None:
+                    instance.linear.bias.copy_(original_module.bias)
         return instance
+
+    def pad_weights(self, pad_to: int):
+        """
+        Pad the internal linear layer's weights to multiples of pad_to.
+        This modifies the module in-place by padding the internal nn.Linear layer.
+        Useful for optimizing CUDA kernel performance (e.g., Tensor Core alignment).
+        
+        Args:
+            pad_to: Pad dimensions to multiples of this value (e.g., 128, 256)
+        """
+        w = self.linear.weight  # Shape: [out_features, in_features]
+        b = self.linear.bias
+        
+        current_out, current_in = w.shape
+        
+        # Calculate padded dimensions
+        padded_out = ((current_out + pad_to - 1) // pad_to) * pad_to
+        padded_in = ((current_in + pad_to - 1) // pad_to) * pad_to
+        
+        # Only pad if needed
+        if padded_out > current_out or padded_in > current_in:
+            # Create padded weight matrix (zero-padded)
+            w_padded = torch.zeros(padded_out, padded_in, device=w.device, dtype=w.dtype)
+            w_padded[:current_out, :current_in] = w
+            
+            # Pad bias if exists
+            b_padded = None
+            if b is not None:
+                b_padded = torch.zeros(padded_out, device=b.device, dtype=b.dtype)
+                b_padded[:current_out] = b
+            
+            # Create new Linear layer with padded dimensions
+            new_linear = torch.nn.Linear(
+                padded_in,
+                padded_out,
+                bias=(b is not None),
+                device=w.device,
+                dtype=w.dtype
+            )
+            
+            # Copy padded weights
+            with torch.no_grad():
+                new_linear.weight.data.copy_(w_padded)
+                if b_padded is not None:
+                    new_linear.bias.data.copy_(b_padded)
+            
+            # Explicitly delete old linear layer to free memory
+            old_linear = self.linear
+            del old_linear
+            
+            # Replace the internal linear layer
+            self.linear = new_linear
+            
+            # Update active dimensions
+            self.active_in_features = padded_in
+            self.active_out_features = padded_out
+            
+            # Note: We keep original_in_features and original_out_features unchanged
+            # The forward pass will still work correctly because:
+            # - For gate/up_proj in inference_time mode: output is reduced, we'll use [:current_out]
+            # - For down_proj: input is reduced, we'll use [:current_in]
+        else:
+            # No padding needed, just ensure contiguous
+            if not w.is_contiguous():
+                w = w.contiguous()
+                self.linear.weight.data = w
+            if b is not None and not b.is_contiguous():
+                b = b.contiguous()
+                self.linear.bias.data = b
+
+    def __repr__(self):
+        return (f"{self.__class__.__name__}("
+                f"original_in={self.original_in_features}, original_out={self.original_out_features}, "
+                f"active_in={self.active_in_features}, active_out={self.active_out_features}, "
+                f"bias={self.linear.bias is not None})")

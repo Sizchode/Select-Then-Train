@@ -10,7 +10,7 @@ import numpy as np
 import torch.nn as nn
 from collections import defaultdict
 
-from stt.mlps.stt_linear2 import STTLinear
+from stt.mlps.stt_linear import STTLinear
 from stt.stt_lora import STTLoraLinear
 # from diet.tracker2 import NeuronTracker
 

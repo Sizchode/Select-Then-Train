@@ -18,7 +18,7 @@ from transformers import (
     CLIPVisionModel
 )
 from stt.stt_lora import STTLoraLinear
-from stt.mlps.stt_linear2 import STTLinear  # Use the selective linear layer from stt_linear2.py
+from stt.mlps.stt_linear import STTLinear
 from stt.stt_transformer import STTTransformer  # Use the pruner from stt_transformer.py
 from stt.stt_tracker import STTTracker as NeuronTracker
 from stt.ablation_tracker import AblationTracker

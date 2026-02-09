@@ -63,7 +63,7 @@ from torch.utils.data import DataLoader
 from transformers import AutoModelForImageClassification
 from stt.stt_tracker import STTTracker
 from stt.stt_transformer import STTTransformer
-from stt.mlps.stt_linear2 import STTLinear
+from stt.mlps.stt_linear import STTLinear
 
 # 1. Load your model
 model = AutoModelForImageClassification.from_pretrained("google/vit-base-patch16-224")
@@ -132,7 +132,7 @@ from torch.utils.data import DataLoader
 from transformers import AutoModelForSequenceClassification, AutoTokenizer
 from stt.stt_tracker import STTTracker
 from stt.stt_transformer import STTTransformer
-from stt.mlps.stt_linear2 import STTLinear
+from stt.mlps.stt_linear import STTLinear
 
 # 1. Load model and tokenizer
 model_name = "bert-base-uncased"
@@ -202,7 +202,7 @@ from torch.utils.data import DataLoader
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from stt.stt_tracker import STTTracker
 from stt.stt_transformer import STTTransformer
-from stt.mlps.stt_linear2 import STTLinear
+from stt.mlps.stt_linear import STTLinear
 
 # 1. Load model and tokenizer
 model_name = "Qwen/Qwen2-0.5B"
@@ -283,10 +283,11 @@ stt/
 ├── stt/                    # Core STT implementation
 │   ├── stt_tracker.py      # Neuron selection tracker
 │   ├── stt_transformer.py  # Transformer adaptation
-│   ├── stt_linear.py       # Selective linear layers
 │   ├── stt_lora.py         # STT + LoRA integration
 │   ├── wanda_adapt_tracker.py  # Wanda adaptive pruning tracker
 │   ├── ablation_tracker.py     # Ablation study tracker
+│   ├── mlps/               # MLP layer implementations
+│   │   └── stt_linear.py   # Selective linear layers
 │   ├── dataset/            # Dataset loaders
 │   ├── trainers/           # Custom trainers
 │   └── evaluate/           # Evaluation utilities

@@ -5,7 +5,7 @@ from ..evaluate import evaluate_clutrr
 from ..evaluate.gen_eval import (
     evaluate_boolq, evaluate_arc
 )
-from ..mlps.stt_linear2 import STTLinear
+from ..mlps.stt_linear import STTLinear
 from trl import SFTTrainer
 import wandb
 

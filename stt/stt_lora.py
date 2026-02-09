@@ -3,7 +3,7 @@ import math
 import torch
 import torch.nn as nn
 
-from .mlps.stt_linear2 import STTLinear
+from .mlps.stt_linear import STTLinear
 
 
 class STTLoraLinear(nn.Module):

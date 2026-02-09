@@ -6,7 +6,7 @@ from typing import Dict, Optional, List, Any, Union
 logger = logging.getLogger(__name__)
 
 # From our STTLinear implementation
-from .mlps.stt_linear2 import STTLinear
+from .mlps.stt_linear import STTLinear
 
 # Common MLP submodule names
 MLP_SUBMODULE_NAMES = {
