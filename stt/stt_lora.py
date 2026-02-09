@@ -160,13 +160,13 @@ class STTLoraLinear(nn.Module):
                 f"bias={self.stt_linear.linear.bias is not None})")
 
     @classmethod
-    def merge_and_replace_all(cls, model):
+    def merge_and_convert(cls, model):
         """
-        Merge all STTLoraLinear weights into STTLinear and replace STTLoraLinear with STTLinear.
+        Merge all STTLoraLinear weights into STTLinear and convert STTLoraLinear to STTLinear.
         
         This class method:
         1. Merges LoRA weights into the base STTLinear weights for all STTLoraLinear instances
-        2. Replaces STTLoraLinear modules with their underlying STTLinear modules
+        2. Converts STTLoraLinear modules to their underlying STTLinear modules
         
         This is useful after training when you want to:
         - Remove the LoRA wrapper for inference
@@ -176,7 +176,7 @@ class STTLoraLinear(nn.Module):
             model: Model containing STTLoraLinear modules
             
         Returns:
-            Number of modules replaced
+            Number of modules converted
         """
         replacements = []
         
@@ -213,12 +213,12 @@ class STTLoraLinear(nn.Module):
                 # Store replacement info
                 replacements.append((parent, attr_name, stt_linear, name))
         
-        # Perform replacements
+        # Perform conversions
         for parent, attr_name, stt_linear, full_name in replacements:
             setattr(parent, attr_name, stt_linear)
-            print(f"[Replace] Replaced {full_name}: STTLoraLinear -> STTLinear")
+            print(f"[Convert] Converted {full_name}: STTLoraLinear -> STTLinear")
         
         if replacements:
-            print(f"[Replace] Total: {len(replacements)} modules replaced")
+            print(f"[Convert] Total: {len(replacements)} modules converted")
         
         return len(replacements)

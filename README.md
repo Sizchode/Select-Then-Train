@@ -43,8 +43,9 @@ We provide SLURM job scripts in the `scripts/` directory for running experiments
    sbatch image_exp       # Vision Transformers (ViTs)
    sbatch text_exp        # Encoder-only text models (BERT, etc.)
    ```
-**Available training modes:**
+**Available adaptation modes:**
 - `stt`: Select-Then-Train with neuron selection
+- `stt_lora`: STT-LoRA for parameter-efficient fine-tuning
 - `magnitude_pruning`: Magnitude-based pruning baseline
 - `wanda_adapt`: Wanda adaptive pruning
 - `baseline`: Full fine-tuning baseline
@@ -267,6 +268,79 @@ for name, module in pruned_model.named_modules():
         elif 'down_proj' in name:
             module.inference_time = False  # Keep scatter mode for down layers
 ```
+
+### STT-LoRA for Parameter-Efficient Fine-Tuning
+
+STT can be combined with LoRA (Low-Rank Adaptation) for even more parameter-efficient training. This is particularly useful for large models where you want to minimize trainable parameters while maintaining performance.
+
+```python
+import torch
+from torch.utils.data import DataLoader
+from transformers import AutoModelForCausalLM, AutoTokenizer
+from stt.stt_tracker import STTTracker
+from stt.stt_transformer import STTTransformer
+from stt.mlps.stt_linear import STTLinear
+from stt.stt_lora import STTLoraLinear
+
+# 1-4. Follow the same steps as regular STT (load model, select neurons, transform)
+# ... (same as decoder-only example above) ...
+
+# 5. After STT transformation, wrap STTLinear layers with STTLoraLinear
+for name, module in pruned_model.named_modules():
+    if isinstance(module, STTLinear):
+        # Get parent module for replacement
+        parent_name = name.rsplit('.', 1)[0] if '.' in name else ''
+        attr_name = name.split('.')[-1]
+        parent = pruned_model
+        if parent_name:
+            for part in parent_name.split('.'):
+                parent = getattr(parent, part)
+        
+        # Wrap with STTLoraLinear
+        stt_lora = STTLoraLinear(
+            stt_linear=module,
+            r=16,              # LoRA rank
+            lora_alpha=32,     # LoRA alpha scaling
+            lora_dropout=0.1,  # LoRA dropout
+            merge_weights=False # Keep weights separate during training
+        )
+        setattr(parent, attr_name, stt_lora)
+
+# 6. Set trainable parameters (only LoRA adapters and output head)
+for param in pruned_model.parameters():
+    param.requires_grad = False
+
+for name, module in pruned_model.named_modules():
+    if isinstance(module, STTLoraLinear):
+        # Only LoRA adapters are trainable
+        module.lora_A.requires_grad = True
+        module.lora_B.requires_grad = True
+    if "lm_head" in name:
+        for param in module.parameters():
+            param.requires_grad = True
+
+# 7. Train with LoRA (much fewer parameters than full fine-tuning)
+optimizer = torch.optim.AdamW(pruned_model.parameters(), lr=5e-4)  # Higher LR for LoRA
+# ... training loop ...
+
+# 8. After training, merge LoRA weights and switch to inference mode
+pruned_model.eval()
+
+# Merge and convert STTLoraLinear to STTLinear
+STTLoraLinear.merge_and_convert(pruned_model)
+
+# Enable inference_time and apply padding
+for name, module in pruned_model.named_modules():
+    if isinstance(module, STTLinear):
+        if any(key in name for key in ["gate_proj", "up_proj"]):
+            module.inference_time = True
+            module.pad_weights(pad_to=128)
+        elif 'down_proj' in name:
+            module.inference_time = False
+```
+
+**Key differences from regular STT:**
+- After STT transformation, wrap `STTLinear` layers with `STTLoraLinear`. Before inference, use `STTLoraLinear.merge_and_convert()` to merge LoRA weights and convert back to `STTLinear`, then proceed with regular STT.
 
 ### Key Parameters
 

@@ -635,8 +635,8 @@ def main():
         )
         
         if is_stt_lora_mode:
-            print("[Merge & Replace] Merging STTLoraLinear weights and replacing with STTLinear...")
-            STTLoraLinear.merge_and_replace_all(model)
+            print("[Merge & Convert] Merging STTLoraLinear weights and converting to STTLinear...")
+            STTLoraLinear.merge_and_convert(model)
             if device == "cuda":
                 torch.cuda.empty_cache()
                 torch.cuda.synchronize()
