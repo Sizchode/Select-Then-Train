@@ -12,7 +12,7 @@ from trl import DataCollatorForCompletionOnlyLM, SFTConfig
 import os
 from META import LLM_DATASET_PATHS as dataset_paths  # Assuming this exists
 from stt.dataset import CLUTRR
-from stt.dataset.genloader_2 import BoolQ, ARC
+from stt.dataset.genloader_2 import BoolQ, ARC, OBQA
 from stt.mlps.stt_linear import STTLinear
 from stt.stt_transformer import STTTransformer
 from stt.stt_tracker import STTTracker as NeuronTracker
@@ -36,7 +36,7 @@ def main():
     parser = argparse.ArgumentParser(description='Hidden Dimension Pruning Training for LLMs')
     parser.add_argument('--model', type=str, required=True, help='Model name or path')
     parser.add_argument('--task', "--dataset", type=str,
-                        choices=['clutrr', 'boolq', 'arc-e', 'arc-c'],
+                        choices=['clutrr', 'boolq', 'arc-e', 'arc-c', 'obqa'],
                         default="clutrr",
                         help='Task/dataset to evaluate on')
     parser.add_argument('--mode', type=str,
@@ -133,11 +133,16 @@ def main():
             chat_template=args.apply_chat_template,
             model_name=args.model_name
         )
+    elif args.task == 'obqa':
+        data_loader = OBQA(
+            chat_template=args.apply_chat_template,
+            model_name=args.model_name
+        )
     else:
-        raise ValueError(f"Unsupported task: {args.task}. Supported tasks: clutrr, boolq, arc-e, arc-c")
+        raise ValueError(f"Unsupported task: {args.task}. Supported tasks: clutrr, boolq, arc-e, arc-c, obqa")
     datasets = data_loader.load_data(train_size=args.train_size)
     if args.dev_mode:
-        if args.task in ['arc-e', 'arc-c']:
+        if args.task in ['arc-e', 'arc-c', 'obqa']:
             train_dataset = datasets['train']
             test_dataset = datasets['validation'] 
         else:  # clutrr, boolq
@@ -147,7 +152,7 @@ def main():
         if args.task == 'boolq':
             train_dataset = datasets['train']
             test_dataset = datasets['test']
-        elif args.task in ['arc-e', 'arc-c']:
+        elif args.task in ['arc-e', 'arc-c', 'obqa']:
             train_dataset = datasets['train']
             test_dataset = datasets['test']
         else:  # clutrr
@@ -158,7 +163,7 @@ def main():
         response_template_with_context = " A:\n"
     elif args.task == 'clutrr':
         response_template_with_context = " 's\n"
-    elif args.task in ['arc-e', 'arc-c']:
+    elif args.task in ['arc-e', 'arc-c', 'obqa']:
         response_template_with_context = "Answer:\n"
     else:
         response_template_with_context = "\n"  

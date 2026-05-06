@@ -232,3 +232,55 @@ class ARC:
 
 
 
+
+class OBQA:
+    def __init__(self, prompt_template=None, chat_template=False, model_name=None, seed=42):
+        self.seed = seed
+        self.model_name = model_name
+        self.prompt_template = prompt_template or "Question: {question}\nOptions:\nA. {A}\nB. {B}\nC. {C}\nD. {D}\nAnswer:\n"
+        if chat_template:
+            self.prompt_template = f"<s>[INST] {self.prompt_template} [/INST]\n"
+        self.datasets = {}
+    def load_data(self, train_size=0):
+        raw_dataset = load_dataset("openbookqa", "main")
+        for split in ['train', 'validation', 'test']:
+            data = raw_dataset[split]
+            if split == 'train' and train_size:
+                data = data.shuffle(seed=self.seed).select(range(train_size))
+            self.datasets[split] = self.format_prompt(data)
+        return self.datasets
+    def format_prompt(self, data):
+        formatted = []
+        for d in data:
+            # choices = {choice[“label”]: choice[“text”] for choice in d[“choices”]}
+            choices = {label: text for label, text in zip(d["choices"]["label"], d["choices"]["text"])}
+            prompt = self.prompt_template.format(
+                question=d["question_stem"],
+                A=choices.get("A", ""),
+                B=choices.get("B", ""),
+                C=choices.get("C", ""),
+                D=choices.get("D", "")
+            )
+            answer = d["answerKey"]
+            text = prompt + answer + '</s>'
+            formatted.append({
+                'prompt': prompt,
+                'true_labels': [answer],
+                'text': text
+            })
+        return Dataset.from_pandas(pd.DataFrame(formatted))
+    def get_active_set(self, ratio=0.05):
+        if 'train' not in self.datasets:
+            raw_dataset = load_dataset("openbookqa", "main")
+            train_data = raw_dataset['train']
+        else:
+            train_data = self.datasets['train']
+        total_samples = len(train_data)
+        sample_size = max(1, int(total_samples * ratio))
+        random.seed(self.seed)
+        if 'train' not in self.datasets:
+            train_data = train_data.shuffle(seed=self.seed).select(range(sample_size))
+            active_set = self.format_prompt(train_data)
+        else:
+            active_set = self.datasets['train'].shuffle(seed=self.seed).select(range(sample_size))
+        return active_set

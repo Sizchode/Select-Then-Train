@@ -13,11 +13,12 @@ from trl import DataCollatorForCompletionOnlyLM, SFTConfig
 import os
 from META import LLM_DATASET_PATHS as dataset_paths  # Assuming this exists
 from stt.dataset import CLUTRR
-from stt.dataset.genloader_2 import BoolQ, ARC
+from stt.dataset.genloader_2 import BoolQ, ARC, OBQA
 from stt.mlps.stt_linear import STTLinear
 from stt.stt_transformer import STTTransformer
 from stt.stt_tracker import STTTracker as NeuronTracker
 from stt.ablation_tracker import AblationTracker
+from stt.gate_product_tracker import GateProductTracker
 from peft import get_peft_model, LoraConfig
 from stt.trainers import CustomSFTTrainerV2
 from stt.stt_lora import STTLoraLinear  
@@ -34,19 +35,136 @@ import torch.nn as nn
 logger = logging.getLogger(__name__)
 from torch.utils.data import DataLoader
 
+
+def compute_stt_indices_with_budget(tracker, dataloader, k_map):
+    """Ablation-local budget matching for STT's dual mean/rate ranking."""
+    tracker.collect(dataloader)
+
+    active_per_layer = {}
+    for layer, st in tracker.stats.items():
+        if st["count"] == 0:
+            continue
+
+        target_budget = int(k_map.get(layer, 0))
+        if target_budget <= 0:
+            continue
+
+        mean = st["sum_activation"] / st["count"]
+        sparsity = st["sum_sparsity"] / st["count"]
+        D = mean.size(0)
+        keep = min(target_budget, D)
+
+        mean_order = torch.argsort(mean, descending=True)
+        rate_order = torch.argsort(sparsity, descending=True)
+
+        selected = []
+        seen = set()
+        for i in range(D):
+            for idx in (mean_order[i].item(), rate_order[i].item()):
+                if idx in seen:
+                    continue
+                seen.add(idx)
+                selected.append(idx)
+                if len(selected) >= keep:
+                    break
+            if len(selected) >= keep:
+                break
+
+        active_per_layer[layer] = torch.tensor(selected, dtype=torch.long)
+    return active_per_layer
+
+
+def build_budget_matched_stt_model(
+    *,
+    mode_name,
+    model,
+    tokenizer,
+    data_loader,
+    active_sample_ratio,
+    active_threshold,
+    default_active_sample_ratio,
+    default_active_threshold,
+    topk_ratio,
+    eval_batch,
+    device,
+):
+    print(f"[{mode_name}] Budget-matched STT ablation")
+    print(
+        f"[{mode_name}] Budget source: default active_sample_ratio={default_active_sample_ratio}, "
+        f"default active_threshold={default_active_threshold}, topk_ratio={topk_ratio}"
+    )
+
+    sampled_subset = data_loader.get_active_set(active_sample_ratio)
+    sampled_subset = sampled_subset['text']
+    active_dataloader = torch.utils.data.DataLoader(sampled_subset, batch_size=eval_batch)
+
+    budget_subset = data_loader.get_active_set(default_active_sample_ratio)
+    budget_subset = budget_subset['text']
+    budget_dataloader = torch.utils.data.DataLoader(budget_subset, batch_size=eval_batch)
+
+    budget_tracker = NeuronTracker(
+        model=model,
+        tokenizer=tokenizer,
+        threshold=default_active_threshold,
+        topk_ratio=topk_ratio,
+        device=device,
+        verbose=False
+    )
+    budget_active = budget_tracker.get_active_indices(dataloader=budget_dataloader) or {}
+    k_map = {}
+    for ln, idx in budget_active.items():
+        try:
+            k_map[ln] = int(idx.numel())
+        except Exception:
+            k_map[ln] = int(len(idx))
+    print(f"[{mode_name}] Matched default retained budgets for {len(k_map)} layers")
+    print(f"[{mode_name}] Example budgets: {list(k_map.items())[:3]}")
+
+    tracker = NeuronTracker(
+        model=model,
+        tokenizer=tokenizer,
+        threshold=active_threshold,
+        topk_ratio=1.0,
+        device=device,
+        verbose=True
+    )
+    layer_name_map = tracker.get_layer_name_map()
+    active_indices_dict = compute_stt_indices_with_budget(
+        tracker=tracker,
+        dataloader=active_dataloader,
+        k_map=k_map,
+    )
+
+    nst = STTTransformer(
+        model=model,
+        active_neurons=active_indices_dict,
+        layer_name_map=layer_name_map,
+        device=device,
+        verbose=True
+    )
+    model = nst.transform().to(device)
+    print(f"[{mode_name}] Budget-matched STT model ready; proceed to train/eval as usual.")
+    return model
+
+
 def main():
     parser = argparse.ArgumentParser(description='Hidden Dimension Pruning Training for LLMs')
 
     parser.add_argument('--model', type=str, required=True, help='Model name or path')
     parser.add_argument('--task', "--dataset", type=str,
-                        choices=['clutrr', 'boolq', 'arc-e', 'arc-c'],
+                        choices=['clutrr', 'boolq', 'arc-e', 'arc-c', 'obqa'],
                         default="clutrr",
                         help='Task/dataset to evaluate on')
     parser.add_argument('--mode', type=str,
-                        choices=["lora", "finetune", "baseline", "mag_tp", "wanda_tp",
-                        "calibration", "activation_mean_value", "activation_rate"],
+                        choices=["lora", "finetune", "baseline", "mag_tp", "wanda_tp", "gateprod",
+                        "calibration", "ns_activeset", "ns_sigma", "activation_mean_value", "activation_rate"],
                         default="baseline",
-                        help="Training mode: 'activation_mean_value' for activation magnitude ablation, 'activation_rate' for activation frequency ablation, etc.")
+                        help=(
+                            "Ablation mode. 'ns_activeset' varies --active_sample_ratio while "
+                            "holding the default STT per-layer budget fixed; 'ns_sigma' varies "
+                            "--active_threshold while holding the default STT per-layer budget fixed; "
+                            "'activation_mean_value' and 'activation_rate' use alternative ranking metrics."
+                        ))
     parser.add_argument('--apply_chat_template',
                         action='store_true',
                         help='Using chat template in the prompt; False by default')
@@ -65,6 +183,8 @@ def main():
 
     parser.add_argument('--active_threshold', type=float, default=0.01,
                         help='Activation threshold for finding active neurons')
+    parser.add_argument('--active_thresholds', type=float, nargs=2, default=None,
+                        help='Optional two threshold values; if set, overrides --active_threshold')
     parser.add_argument('--active_sample_ratio', type=float, default=0.1,
                         help='Sample ratio of training data for activation tracking')
     parser.add_argument("--topk_ratio",type=float, default=0.30, metavar="R",
@@ -94,6 +214,8 @@ def main():
     parser.add_argument("--tune_attn", action="store_true", help="tune attn proj during tracking (if tracker supports)")
     parser.add_argument('--dev_mode', action='store_true',
                         help='Use a held-out dev set from training set for validation (grid search); do NOT use real test set')
+    default_active_threshold = parser.get_default("active_threshold")
+    default_active_sample_ratio = parser.get_default("active_sample_ratio")
     args = parser.parse_args()
 
     set_seed(args.seed)
@@ -161,13 +283,18 @@ def main():
             chat_template=args.apply_chat_template,
             model_name=args.model_name
         )
+    elif args.task == 'obqa':
+        data_loader = OBQA(
+            chat_template=args.apply_chat_template,
+            model_name=args.model_name
+        )
     else:
-        raise ValueError(f"Unsupported task: {args.task}. Supported tasks: clutrr, boolq, arc-e, arc-c")
+        raise ValueError(f"Unsupported task: {args.task}. Supported tasks: clutrr, boolq, arc-e, arc-c, obqa")
 
     datasets = data_loader.load_data(train_size=args.train_size)
 
     if args.dev_mode:
-        if args.task in ['arc-e', 'arc-c']:
+        if args.task in ['arc-e', 'arc-c', 'obqa']:
             train_dataset = datasets['train']
             test_dataset = datasets['validation'] 
         else:  # clutrr, boolq
@@ -177,7 +304,7 @@ def main():
         if args.task == 'boolq':
             train_dataset = datasets['train']
             test_dataset = datasets['test']
-        elif args.task in ['arc-e', 'arc-c']:
+        elif args.task in ['arc-e', 'arc-c', 'obqa']:
             train_dataset = datasets['train']
             test_dataset = datasets['test']
         else:  # clutrr
@@ -188,7 +315,7 @@ def main():
         response_template_with_context = " A:\n"
     elif args.task == 'clutrr':
         response_template_with_context = " 's\n"
-    elif args.task in ['arc-e', 'arc-c']:
+    elif args.task in ['arc-e', 'arc-c', 'obqa']:
         response_template_with_context = "Answer:\n"
     else:
         response_template_with_context = "\n"  # Default fallback
@@ -300,7 +427,43 @@ def main():
         plt.savefig(f"{base}.pdf", bbox_inches="tight")
         plt.savefig(f"{base}.svg", bbox_inches="tight")
         print(f"[*] Heatmap saved to: {base}.pdf / {base}.svg")
-    if args.mode == "activation_mean_value":
+    elif args.mode == "ns_activeset":
+        print(
+            f"[ns_activeset] Semantics: vary calibration active set size via "
+            f"--active_sample_ratio={args.active_sample_ratio}; keep per-layer retained counts fixed."
+        )
+        model = build_budget_matched_stt_model(
+            mode_name="ns_activeset",
+            model=model,
+            tokenizer=tokenizer,
+            data_loader=data_loader,
+            active_sample_ratio=args.active_sample_ratio,
+            active_threshold=args.active_threshold,
+            default_active_sample_ratio=default_active_sample_ratio,
+            default_active_threshold=default_active_threshold,
+            topk_ratio=args.topk_ratio,
+            eval_batch=args.eval_batch,
+            device=device,
+        )
+    elif args.mode == "ns_sigma":
+        print(
+            f"[ns_sigma] Semantics: vary activation threshold via "
+            f"--active_threshold={args.active_threshold}; keep per-layer retained counts fixed."
+        )
+        model = build_budget_matched_stt_model(
+            mode_name="ns_sigma",
+            model=model,
+            tokenizer=tokenizer,
+            data_loader=data_loader,
+            active_sample_ratio=args.active_sample_ratio,
+            active_threshold=args.active_threshold,
+            default_active_sample_ratio=default_active_sample_ratio,
+            default_active_threshold=default_active_threshold,
+            topk_ratio=args.topk_ratio,
+            eval_batch=args.eval_batch,
+            device=device,
+        )
+    elif args.mode == "activation_mean_value":
         print("[ABLT] one-shot, sparsity-based selection; budget-matched to NS per layer")
         # 1) Build a small, non-shuffled active set (reuse your existing loader & ratio)
         sampled_subset = data_loader.get_active_set(args.active_sample_ratio)
@@ -442,6 +605,54 @@ def main():
                 print(f"[ABLT2] trainable head: {name}")
 
         print("[ABLT2] Activation-rate-based (budget-matched) model ready; proceed to train/eval as usual.")
+    elif args.mode == "gateprod":
+        print("[GATEPROD] one-shot, act(gate)*up selection; budget-matched to STT per layer")
+        sampled_subset = data_loader.get_active_set(args.active_sample_ratio)
+        sampled_subset = sampled_subset['text']
+        active_dataloader = torch.utils.data.DataLoader(sampled_subset, batch_size=args.eval_batch)
+
+        tracker_budget = NeuronTracker(
+            model=model,
+            tokenizer=tokenizer,
+            threshold=args.active_threshold,
+            topk_ratio=args.topk_ratio,
+            device=device,
+            verbose=False
+        )
+        ns_active = tracker_budget.get_active_indices(dataloader=active_dataloader) or {}
+        layer_name_map = tracker_budget.get_layer_name_map()
+        k_map = {ln: len(idx) for ln, idx in ns_active.items()}
+
+        gateprod_tracker = GateProductTracker(
+            model=model,
+            tokenizer=tokenizer,
+            threshold=args.active_threshold,
+            topk_ratio=1.0,
+            use_abs_threshold=True,
+            device=device,
+            track_attention_proj=args.tune_attn,
+            verbose=False
+        )
+        sel_indices = gateprod_tracker.get_active_indices_with_budget(
+            dataloader=active_dataloader,
+            k_map=k_map,
+        )
+
+        nst = STTTransformer(
+            model=model,
+            active_neurons=sel_indices,
+            layer_name_map=layer_name_map,
+            device=device,
+            verbose=True
+        )
+        model = nst.transform().to(device)
+        for p in model.parameters():
+            p.requires_grad = False
+        for name, module in model.named_modules():
+            if isinstance(module, STTLinear) or 'lm_head' in name:
+                for p in module.parameters():
+                    p.requires_grad = True
+        print("[GATEPROD] Product-based (budget-matched) model ready; proceed to train/eval as usual.")
     elif args.mode == "wanda_tp":
         sampled_subset = data_loader.get_active_set(args.active_sample_ratio)['text']
         active_dataloader = torch.utils.data.DataLoader(sampled_subset, batch_size=args.eval_batch, shuffle=False)
@@ -510,7 +721,29 @@ def main():
     final_param_count = sum(p.numel() for p in model.parameters())
     final_trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
 
-    if args.mode in ("activation_mean_value", "activation_rate"):
+    if args.mode == "ns_activeset":
+        print("[ns_activeset] Training only STTLinear/lm_head after budget-matched active-set ablation.")
+        trainable_params_list = []
+        for name, param in model.named_parameters():
+            param.requires_grad = False
+        for name, module in model.named_modules():
+            if isinstance(module, STTLinear) or 'lm_head' in name:
+                for param in module.parameters():
+                    param.requires_grad = True
+                    trainable_params_list.append(param)
+        optimizer = AdamW(trainable_params_list, lr=args.lr, weight_decay=args.wd)
+    elif args.mode == "ns_sigma":
+        print("[ns_sigma] Training only STTLinear/lm_head after budget-matched threshold ablation.")
+        trainable_params_list = []
+        for name, param in model.named_parameters():
+            param.requires_grad = False
+        for name, module in model.named_modules():
+            if isinstance(module, STTLinear) or 'lm_head' in name:
+                for param in module.parameters():
+                    param.requires_grad = True
+                    trainable_params_list.append(param)
+        optimizer = AdamW(trainable_params_list, lr=args.lr, weight_decay=args.wd)
+    elif args.mode in ("activation_mean_value", "activation_rate"):
         trainable_params_list = []
         for name, param in model.named_parameters():
             param.requires_grad = False
